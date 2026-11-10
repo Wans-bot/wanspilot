@@ -42,12 +42,15 @@ services:
 | 删除任务（含文件） | 200，列表归零 |
 | 任务页实时刷新 | Sintel 下载中 10.5%，`12.9 MB / 123 MB`，`↓319 KB/s`，路径 `/video/Sintel` |
 | 设置页自检 | 下载目录 ✓ `/video 可写`、qBittorrent ✓ `已配置 http://127.0.0.1:8585`、下载引擎 ✓ 就绪、索引源均可用 |
+| TMDB Key | 已填入（32 位 v3 key），`/api/tmdb/search?q=matrix` 返回《黑客帝国》1999 |
+| 影视墙 | 热门电影/剧集/动漫/高分榜全部有数据，海报经 `/api/image` 代理加载，1440×1000 截图无破图 |
+| 界面 logo | 顶栏 W 标 + 「WansPilot」正常显示，`/logo.png`、`/logo-mark.png` 均 200 image/png |
 
 截图
+- `home-live.png` — 影视墙实机（TMDB 数据 + 海报 + logo）
 - `tasks-live.png` — 任务页实机（真实下载 Sintel）
 - `settings-live.png` — 设置页实机（qB 已连接、剩余空间 22.9 TB）
 
 未验证/已知限制
-- TMDB 未配置 Key（提示「先填写 TMDB API Key」），影视墙与搜索未实测
 - 自动整理（`autoOrganize`）默认关闭，未在该 NAS 上开启验证
 - 双架构镜像由 GitHub Actions 产出（amd64+arm64），本机只验证了 amd64（NAS 是 x86_64）
