@@ -1,0 +1,34 @@
+# 用法：把下面的地址、账号和下载目录改成你自己的，然后
+#   docker compose up -d
+#
+# 前提：NAS 上已经装好 qBittorrent 且 Web UI 可访问。
+# wanspilot 只负责挑种子、加任务，下载/做种/限速都在 qB 里完成。
+
+services:
+  wanspilot:
+    image: wansbot/wanspilot:latest
+    container_name: wanspilot
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: Asia/Shanghai
+      # 容器内以该 UID/GID 运行，建议与 NAS 上拥有下载目录的用户一致
+      PUID: 1000
+      PGID: 1000
+      # ---- qBittorrent（必填地址；账号留空表示 qB 免认证时直连）----
+      WP_QB_URL: http://192.168.1.10:8080
+      WP_QB_USERNAME: ""
+      WP_QB_PASSWORD: ""
+      # qB 视角的保存目录（写进 torrents/add 的 savepath）
+      WP_QB_SAVE_PATH: /downloads
+      # 上面那个目录在本容器里的挂载路径；不挂就留空，自动整理会跳过
+      WP_QB_LOCAL_PATH: /downloads
+      WP_QB_CATEGORY: wanspilot
+      # ---- 可选 ----
+      WP_TMDB_API_KEY: ""
+    volumes:
+      - ./data:/data
+      # 关键：与 qB 的 savepath 指向宿主机同一个目录，
+      # 容器内路径与 qB 里的路径保持一致（这里都是 /downloads）
+      - /volume1/downloads:/downloads

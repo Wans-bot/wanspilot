@@ -1,0 +1,10 @@
+{
+  "name": "wanspilot-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "wanspilot backend runtime dependencies (shipped inside the Docker image)",
+  "dependencies": {
+    "undici": "^7.16.0"
+  }
+}
