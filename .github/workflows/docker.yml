@@ -1,7 +1,8 @@
 name: docker
 
-# 推送到 GHCR（ghcr.io/wans-bot/wanspilot）不需要任何配置，用仓库自带的 GITHUB_TOKEN。
-# 如果另外配了 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret，会同时推一份到 Docker Hub。
+# 默认只推到 GHCR（ghcr.io/wans-bot/wanspilot），用仓库自带的 GITHUB_TOKEN，零配置即可构建。
+# 如果额外配了 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret，
+# 会用 buildx imagetools 把同一份多架构镜像原样复制到 Docker Hub（wansbot/wanspilot），不重新编译。
 
 on:
   workflow_dispatch:
@@ -19,6 +20,8 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      GHCR_IMAGE: ghcr.io/wans-bot/wanspilot
+      HUB_IMAGE: wansbot/wanspilot
     steps:
       - uses: actions/checkout@v4
 
@@ -42,9 +45,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/wans-bot/wanspilot
-            wansbot/wanspilot
+          images: ghcr.io/wans-bot/wanspilot
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
@@ -59,3 +60,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Mirror to Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        run: |
+          echo "${{ steps.meta.outputs.tags }}" | while read -r ref; do
+            [ -z "$ref" ] && continue
+            tag="${ref##*:}"
+            docker buildx imagetools create --tag "${HUB_IMAGE}:${tag}" "$ref"
+          done
