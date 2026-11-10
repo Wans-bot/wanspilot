@@ -6,7 +6,7 @@
 
 services:
   wanspilot:
-    image: wansbot/wanspilot:latest
+    image: ghcr.io/wans-bot/wanspilot:latest
     container_name: wanspilot
     restart: unless-stopped
     ports:
@@ -32,3 +32,12 @@ services:
       # 关键：与 qB 的 savepath 指向宿主机同一个目录，
       # 容器内路径与 qB 里的路径保持一致（这里都是 /downloads）
       - /volume1/downloads:/downloads
+
+# 如果 qBittorrent 用的是 host 网络（绿联/群晖上很常见），wanspilot 也建议用 host：
+# 删掉上面的 ports:，改用 network_mode: host，WP_QB_URL 填 http://127.0.0.1:<qB端口>，
+# 这样能利用 qB 的「本地主机跳过认证」，不用往 NAS 里塞账号密码。
+#
+# 绿联 UGOS Pro 实测（2026-11-11）：
+#   qB 容器 network_mode: host，WebUI 8585，保存目录 /video ← 宿主机 /volume1/video
+#   wanspilot 同样 host 网络，WP_QB_URL=http://127.0.0.1:8585，
+#   WP_QB_SAVE_PATH=/video，WP_QB_LOCAL_PATH=/video，挂载 /volume1/video:/video

@@ -8,7 +8,7 @@
 - 下载：把磁力/种子提交给 qBittorrent，进度、速度、暂停恢复都在 wanspilot 里看
 - 整理：下完后按 `片名 (年份)/` 归档，可选写 .nfo 与海报给 Jellyfin / Emby
 
-镜像：`wansbot/wanspilot`（linux/amd64、linux/arm64）。
+镜像：`ghcr.io/wans-bot/wanspilot:latest`（linux/amd64、linux/arm64）。
 
 ## 快速开始
 
@@ -16,12 +16,32 @@
 
 ```bash
 mkdir -p /volume1/docker/wanspilot && cd /volume1/docker/wanspilot
-curl -O https://raw.githubusercontent.com/<你的仓库>/main/compose.yml
+curl -O https://raw.githubusercontent.com/Wans-bot/wanspilot/main/compose.yml
 # 改里面的 WP_QB_URL 与下载目录映射
 docker compose up -d
 ```
 
 打开 `http://<NAS-IP>:3000`，进「设置」填写 TMDB API Key，点「测试 TMDB」。
+
+### qB 用 host 网络时
+
+qB 容器如果是 `network_mode: host`（绿联、群晖上很常见），wanspilot 也建议用 host 网络，
+这样能直接走 `http://127.0.0.1:<qB端口>`，利用 qB 的「本地主机跳过认证」，不用配账号密码：
+
+```yaml
+services:
+  wanspilot:
+    image: ghcr.io/wans-bot/wanspilot:latest
+    network_mode: host          # 去掉 ports:
+    environment:
+      WP_PORT: 3000
+      WP_QB_URL: http://127.0.0.1:8585
+      WP_QB_SAVE_PATH: /video
+      WP_QB_LOCAL_PATH: /video
+    volumes:
+      - ./data:/data
+      - /volume1/video:/video
+```
 
 ## 配置
 
@@ -63,7 +83,7 @@ wanspilot: /downloads        ← 同样挂进来（WP_QB_LOCAL_PATH 填这个）
 docker buildx build --platform linux/amd64,linux/arm64 -t <你的账号>/wanspilot:latest --push .
 ```
 
-或者 push 一个 `v*` tag，GitHub Actions（`.github/workflows/docker.yml`）会自动构建双架构并推送。需要仓库 secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
+或者 push 一个 `v*` tag，GitHub Actions（`.github/workflows/docker.yml`）会自动构建双架构并推到 GHCR，不需要任何 secret。要再镜像一份到 Docker Hub，加两个仓库 secret：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
 
 本地开发：
 
