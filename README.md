@@ -26,7 +26,7 @@ docker compose up -d
 2. 进「设置」→「qBittorrent」，填 **地址、用户名、密码**（以及可选的保存目录），点「测试 qB 连接」，通过后保存；
 3. 按需填 TMDB API Key，点「测试 TMDB」。
 
-地址要填 NAS 的**局域网 IP + qB WebUI 端口**，例如 `http://192.168.31.119:8585`。
+地址要填 NAS 的**局域网 IP + qB WebUI 端口**，例如 `http://192.168.1.10:<端口号>`。
 不要填 `127.0.0.1` 或 `localhost`：容器里的回环地址指向 wanspilot 自己，永远连不到 NAS 上的 qB，
 设置页和接口都会直接拒绝这种地址。
 

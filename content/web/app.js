@@ -2943,9 +2943,9 @@ function settingsFormEl(settings, highlightKey) {
           el('span', { class: 'field__label', text: 'qBittorrent 地址' }),
           inputEl('text', {
             id: 'set-qb-url', name: 'qbUrl', spellcheck: 'false',
-            value: settings.qbUrl || '', placeholder: 'http://192.168.31.119:8585',
+            value: settings.qbUrl || '', placeholder: 'http://<NAS 局域网 IP>:<qB WebUI 端口>',
           }),
-          hintEl('填 NAS 的局域网 IP + qB 的 WebUI 端口，如 http://192.168.31.119:8585。'
+          hintEl('填 NAS 的局域网 IP + qB 的 WebUI 端口，例如 http://192.168.1.10:端口号。'
             + '不要填 127.0.0.1 或 localhost —— 容器里的回环地址指向 wanspilot 自己，连不到 qB。'
             + '留空表示不启用下载。'),
         ]),

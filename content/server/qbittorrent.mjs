@@ -6,7 +6,8 @@
  * - 任务状态从 GET /api/v2/torrents/info 读，文件清单从 /api/v2/torrents/files 读
  * - 暂停 / 继续 / 删除对应 torrents/pause|resume|delete，5.0 的 stop|start 也兜住
  *
- * 认证：qB 默认要登录。POST /api/v2/auth/login 成功会返回 Set-Cookie: SID=…，
+ * 认证：qB 默认要登录。POST /api/v2/auth/login 成功会下发会话 Cookie
+ * （4.x 叫 SID，5.x 叫 QBT_SID_<端口>），后续请求原样带回。
  * 后续请求带这个 cookie。用户名留空表示「免认证直连」——qB 开了
  * 「对本地主机跳过认证」或局域网白名单时可以不登录；真被拒时错误信息会提示去补账号。
  *
@@ -62,7 +63,7 @@ export function normalizeBaseUrl(raw) {
   }
   if (isLoopbackUrl(withScheme)) {
     throw new QBError(
-      'qBittorrent 地址不能填 127.0.0.1 / localhost：容器里的回环地址指向 wanspilot 自己。请填 NAS 的局域网 IP，例如 http://192.168.31.119:8585',
+      'qBittorrent 地址不能填 127.0.0.1 / localhost：容器里的回环地址指向 wanspilot 自己。请填 NAS 的局域网 IP + qB WebUI 端口，例如 http://192.168.1.10:端口号',
       { statusCode: 400, kind: 'config' },
     );
   }
@@ -70,7 +71,8 @@ export function normalizeBaseUrl(raw) {
 }
 
 export class QBClient {
-  #sid = '';
+  /** 登录后的会话 Cookie，直接带名字（qB 4.x 是 SID，5.x 是 QBT_SID_<端口>）。 */
+  #cookie = '';
 
   #loginPromise = null;
 
@@ -101,7 +103,7 @@ export class QBClient {
     return this.baseUrl;
   }
 
-  /** 单次请求：带 SID、超时、403 时重登一次。 */
+  /** 单次请求：带会话 Cookie、超时、403 时重登一次。 */
   async #send(path, { method = 'GET', query, form, formData, headers = {}, body } = {}) {
     if (!this.configured) {
       throw new QBError('还没有配置 qBittorrent 地址，请到设置页填写', { statusCode: 400, kind: 'config' });
@@ -119,7 +121,7 @@ export class QBClient {
     }
 
     const init = { method, headers: { ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) };
-    if (this.#sid) init.headers.Cookie = `SID=${this.#sid}`;
+    if (this.#cookie) init.headers.Cookie = this.#cookie;
     if (formData) {
       // 交给 fetch 自己算 boundary，不要手写 content-type
       init.body = formData;
@@ -146,8 +148,9 @@ export class QBClient {
       ? res.headers.getSetCookie()
       : [res.headers.get('set-cookie')].filter(Boolean);
     for (const cookie of setCookies) {
-      const match = /(?:^|;\s*)SID=([^;]+)/.exec(cookie);
-      if (match) this.#sid = match[1];
+      // 4.x 下发 SID=…，5.x 下发 QBT_SID_<端口>=…，名字必须原样带回去。
+      const match = /(?:^|;\s*)((?:QBT_)?SID[^=;\s]*)=([^;]+)/i.exec(cookie);
+      if (match) this.#cookie = `${match[1]}=${match[2]}`;
     }
 
     const text = await res.text();
@@ -155,7 +158,7 @@ export class QBClient {
     return { res, text, forbidden };
   }
 
-  /** 登录拿 SID；并发调用合并成一次。 */
+  /** 登录拿会话 Cookie；并发调用合并成一次。 */
   async #login() {
     if (this.#loginPromise) return this.#loginPromise;
     if (!this.hasCredentials) {
@@ -169,16 +172,17 @@ export class QBClient {
         method: 'POST',
         form: { username: this.username, password: this.password },
       });
-      // qB 登录成功返回 200 + 文本 "Ok."，失败也是 200 + "Fails."（设计如此）
-      if (!this.#sid || /^\s*Fails\.?\s*$/i.test(text) || res.status >= 400) {
-        this.#sid = '';
+      // 4.x 成功返回 200 + "Ok."，5.x 返回 204 空响应并下发 QBT_SID_<端口>；
+      // 失败都是 200 + "Fails."。以「拿到 Cookie 且不是 Fails」为准。
+      if (!this.#cookie || /^\s*Fails\.?\s*$/i.test(text) || res.status >= 400) {
+        this.#cookie = '';
         throw new QBError('qBittorrent 登录失败：用户名或密码不对，请到设置页检查', {
           statusCode: 401,
           kind: 'auth',
         });
       }
       log.info(`[qb] 登录成功 ${this.baseUrl}（${this.username}）`);
-      return this.#sid;
+      return this.#cookie;
     })().finally(() => {
       this.#loginPromise = null;
     });
