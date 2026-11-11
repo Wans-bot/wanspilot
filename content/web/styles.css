@@ -390,10 +390,10 @@ select { appearance: none; background-image: none; }
 
 /* ---------- 海报卡 ---------- */
 
-/* 海报格：等宽卡片，最后一行的缺口由脚本用下一页的条目补满，
-   这样每行卡片数量一致、宽度也一致，不会出现末行被拉成两倍宽的情况 */
-.grid { display: flex; flex-wrap: wrap; gap: 22px 16px; }
-.grid > * { flex: 1 1 146px; min-width: 0; }
+/* 海报格：等宽卡片。用 auto-fill 固定轨道宽度，结果只有一两条时也保持
+   146px 起步的正常海报尺寸，不会被拉成巨幅（搜索结果少时最容易踩到） */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap: 22px 16px; }
+.grid > * { min-width: 0; }
 
 /* 横向滑动条：细滚动条 + 两端渐隐 + 悬停出现的左右按钮 */
 .rail-wrap { position: relative; }
