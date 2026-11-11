@@ -2892,53 +2892,69 @@ function checkboxEl(props) { return el('input', Object.assign({ type: 'checkbox'
 function inputEl(type, props) { return el('input', Object.assign({ type: type }, props)); }
 
 /** 设置页那一大张表单。字段顺序与保存时读取的顺序一致，方便对照。 */
+/** 设置页的一张分组卡片：标题 + 说明 + 内容。 */
+function settingsCardEl(title, sub, children) {
+  return el('section', { class: 'panel' }, [
+    el('div', { class: 'panel__head' }, el('div', { class: 'panel__head-text' }, [
+      el('h2', { class: 'panel__title', text: title }),
+      sub ? el('p', { class: 'panel__sub', text: sub }) : null,
+    ])),
+    ...children,
+  ]);
+}
+
 function settingsFormEl(settings, highlightKey) {
-  const form = el('form', { class: 'panel', id: 'settings-form' }, [
-    el('div', { class: 'panel__head' }, el('h2', { class: 'panel__title', text: '基础设置' })),
-    el('div', { class: 'form-grid' }, [
-      el('label', {
-        class: classNames('field', 'field--full', highlightKey && 'field--highlight'),
-        id: 'tmdb-key-field',
-      }, [
-        el('span', { class: 'field__label', text: 'TMDB API Key' }),
-        el('span', { class: 'secret' }, [
-          inputEl('password', {
-            id: 'set-tmdb-key', name: 'tmdbApiKey', autocomplete: 'off', spellcheck: 'false',
-            value: settings.tmdbApiKey || '', placeholder: 'TMDB 账号设置里的 API Key（v3 auth）',
-          }),
-          buttonEl({
-            class: 'btn btn--sm', 'data-action': 'toggle-key', 'aria-label': '显示或隐藏 API Key',
-          }, null, '显示'),
+  return el('form', { class: 'settings__main', id: 'settings-form' }, [
+    settingsCardEl('TMDB', '影视墙、搜索与详情页的数据来源', [
+      el('div', { class: 'form-grid' }, [
+        el('label', {
+          class: classNames('field', 'field--full', highlightKey && 'field--highlight'),
+          id: 'tmdb-key-field',
+        }, [
+          el('span', { class: 'field__label', text: 'TMDB API Key' }),
+          el('span', { class: 'secret' }, [
+            inputEl('password', {
+              id: 'set-tmdb-key', name: 'tmdbApiKey', autocomplete: 'off', spellcheck: 'false',
+              value: settings.tmdbApiKey || '', placeholder: 'TMDB 账号设置里的 API Key（v3 auth）',
+            }),
+            buttonEl({
+              class: 'btn btn--sm', 'data-action': 'toggle-key', 'aria-label': '显示或隐藏 API Key',
+            }, null, '显示'),
+          ]),
+          hintEl('留空表示不使用 TMDB，影视墙、搜索与详情页都会失效。'),
         ]),
-        hintEl('留空表示不使用 TMDB，影视墙、搜索与详情页都会失效。'),
+        el('label', { class: 'field field--full' }, [
+          el('span', { class: 'field__label', text: 'TMDB 接口地址' }),
+          inputEl('text', { name: 'tmdbApiBase', spellcheck: 'false', value: settings.tmdbApiBase || '' }),
+          hintEl('后端访问 TMDB 的接口地址，可由后端替换为镜像。'),
+        ]),
+        el('label', { class: 'field field--full' }, [
+          el('span', { class: 'field__label', text: 'TMDB 图片地址' }),
+          inputEl('text', { name: 'tmdbImageBase', spellcheck: 'false', value: settings.tmdbImageBase || '' }),
+          hintEl('海报与剧照的图片来源，前端只通过 /api/image 取图。'),
+        ]),
+        el('label', { class: 'field field--full' }, [
+          el('span', { class: 'field__label', text: '网络代理' }),
+          inputEl('text', {
+            name: 'proxy', spellcheck: 'false', value: settings.proxy || '', placeholder: '留空表示不使用代理',
+          }),
+          hintEl('后端访问 TMDB 与索引源时使用的代理。'),
+        ]),
       ]),
-      el('label', { class: 'field field--full' }, [
-        el('span', { class: 'field__label', text: 'TMDB 接口地址' }),
-        inputEl('text', { name: 'tmdbApiBase', spellcheck: 'false', value: settings.tmdbApiBase || '' }),
-        hintEl('后端访问 TMDB 的接口地址，可由后端替换为镜像。'),
+    ]),
+
+    settingsCardEl('qBittorrent', '选好的种子交给 qB 下载，限速与做种策略在 qB 里设置', [
+      el('div', { class: 'form-grid' }, [
+        el('label', { class: 'field field--full' }, [
+          el('span', { class: 'field__label', text: 'qBittorrent 地址' }),
+          inputEl('text', {
+            id: 'set-qb-url', name: 'qbUrl', spellcheck: 'false',
+            value: settings.qbUrl || '', placeholder: 'http://192.168.1.10:8080',
+          }),
+          hintEl('填 NAS 上 qBittorrent Web UI 的地址；留空表示不启用下载。'),
+        ]),
       ]),
-      el('label', { class: 'field field--full' }, [
-        el('span', { class: 'field__label', text: 'TMDB 图片地址' }),
-        inputEl('text', { name: 'tmdbImageBase', spellcheck: 'false', value: settings.tmdbImageBase || '' }),
-        hintEl('海报与剧照的图片来源，前端只通过 /api/image 取图。'),
-      ]),
-      el('label', { class: 'field field--full' }, [
-        el('span', { class: 'field__label', text: '网络代理' }),
-        inputEl('text', {
-          name: 'proxy', spellcheck: 'false', value: settings.proxy || '', placeholder: '留空表示不使用代理',
-        }),
-        hintEl('后端访问 TMDB 与索引源时使用的代理。'),
-      ]),
-      el('h3', { class: 'panel__title', style: 'margin-top:6px', text: 'qBittorrent' }),
-      el('label', { class: 'field field--full' }, [
-        el('span', { class: 'field__label', text: 'qBittorrent 地址' }),
-        inputEl('text', {
-          id: 'set-qb-url', name: 'qbUrl', spellcheck: 'false',
-          value: settings.qbUrl || '', placeholder: 'http://192.168.1.10:8080',
-        }),
-        hintEl('填你 NAS 上 qBittorrent Web UI 的地址；留空表示不启用下载。选择种子、添加任务都走 qB，限速与做种策略也在 qB 里设置。'),
-      ]),
-      el('div', { class: 'row row--wrap' }, [
+      el('div', { class: 'form-grid' }, [
         el('label', { class: 'field' }, [
           el('span', { class: 'field__label', text: '用户名' }),
           inputEl('text', {
@@ -2949,17 +2965,17 @@ function settingsFormEl(settings, highlightKey) {
         el('label', { class: 'field' }, [
           el('span', { class: 'field__label', text: '密码' }),
           inputEl('password', { name: 'qbPassword', autocomplete: 'new-password', value: settings.qbPassword || '' }),
-          hintEl('qB 开了「本地主机跳过认证」时，用户名和密码都可以留空。'),
         ]),
       ]),
-      el('div', { class: 'row row--wrap' }, [
+      el('p', { class: 'field__hint', text: 'qB 开了「本地主机跳过认证」时，用户名和密码都可以留空。' }),
+      el('div', { class: 'form-grid' }, [
         el('label', { class: 'field' }, [
           el('span', { class: 'field__label', text: '保存目录（qB 视角）' }),
           inputEl('text', {
             name: 'qbSavePath', spellcheck: 'false',
             value: settings.qbSavePath || '', placeholder: '留空用 qB 默认目录',
           }),
-          hintEl('填 qB 里看到的路径，比如 /downloads 或 /volume1/downloads。'),
+          hintEl('填 qB 里看到的路径，比如 /video。'),
         ]),
         el('label', { class: 'field' }, [
           el('span', { class: 'field__label', text: '本地挂载路径（本容器视角）' }),
@@ -2967,61 +2983,69 @@ function settingsFormEl(settings, highlightKey) {
             name: 'qbLocalPath', spellcheck: 'false',
             value: settings.qbLocalPath || '', placeholder: '留空则不做自动整理',
           }),
-          hintEl('把 qB 的下载目录按同一路径挂给 wanspilot 后填这里，自动整理与配额检查才有文件可读。'),
+          hintEl('把 qB 的下载目录按同一路径挂给 wanspilot 后填这里。'),
         ]),
       ]),
-      el('label', { class: 'field' }, [
-        el('span', { class: 'field__label', text: '分类名' }),
-        inputEl('text', { name: 'qbCategory', spellcheck: 'false', value: settings.qbCategory || '' }),
-        hintEl('wanspilot 添加的任务会打上这个分类，方便在 qB 里单独看或限速。'),
+      el('div', { class: 'form-grid' }, [
+        el('label', { class: 'field' }, [
+          el('span', { class: 'field__label', text: '分类名' }),
+          inputEl('text', { name: 'qbCategory', spellcheck: 'false', value: settings.qbCategory || '' }),
+          hintEl('wanspilot 添加的任务会打上这个分类。'),
+        ]),
       ]),
       el('div', { class: 'row row--wrap' }, [
         buttonEl({ class: 'btn', 'data-action': 'test-qb' }, 'activity', '测试 qB 连接'),
         el('span', { class: 'field__hint', id: 'qb-test-result' }),
       ]),
-      fieldEl('默认清晰度偏好', qualitySelectEl('qualityPreference', settings.qualityPreference || '1080p')),
-      fieldEl('最低做种数', inputEl('number', {
-        name: 'minSeeders', min: '0', step: '1',
-        value: settings.minSeeders === undefined ? 5 : settings.minSeeders,
-      })),
-      fieldEl('单个资源最大体积（GB）', inputEl('number', {
-        name: 'maxSizeGB', min: '1', step: '1',
-        value: settings.maxSizeGB === undefined ? 30 : settings.maxSizeGB,
-      })),
-      fieldEl('订阅检查间隔（分钟）', inputEl('number', {
-        name: 'checkIntervalMinutes', min: '5', step: '5',
-        value: settings.checkIntervalMinutes === undefined ? 60 : settings.checkIntervalMinutes,
-      })),
     ]),
-    switchEl(checkboxEl({ name: 'autoDownload', checked: settings.autoDownload === false ? null : true }),
-      '检查到符合条件的资源时自动下载'),
-    el('div', { class: 'row row--wrap' }, [
+
+    settingsCardEl('筛选与订阅', '自动挑片时按这些门槛过滤', [
+      el('div', { class: 'form-grid' }, [
+        fieldEl('默认清晰度偏好', qualitySelectEl('qualityPreference', settings.qualityPreference || '1080p')),
+        fieldEl('最低做种数', inputEl('number', {
+          name: 'minSeeders', min: '0', step: '1',
+          value: settings.minSeeders === undefined ? 5 : settings.minSeeders,
+        })),
+        fieldEl('单个资源最大体积（GB）', inputEl('number', {
+          name: 'maxSizeGB', min: '1', step: '1',
+          value: settings.maxSizeGB === undefined ? 30 : settings.maxSizeGB,
+        })),
+        fieldEl('订阅检查间隔（分钟）', inputEl('number', {
+          name: 'checkIntervalMinutes', min: '5', step: '5',
+          value: settings.checkIntervalMinutes === undefined ? 60 : settings.checkIntervalMinutes,
+        })),
+      ]),
+      switchEl(checkboxEl({ name: 'autoDownload', checked: settings.autoDownload === false ? null : true }),
+        '检查到符合条件的资源时自动下载'),
+    ]),
+
+    settingsCardEl('下载与整理', '配额、归档与元数据', [
+      el('div', { class: 'form-grid' }, [
+        el('label', { class: 'field' }, [
+          el('span', { class: 'field__label', text: '配额上限（GB，0 表示不限）' }),
+          inputEl('number', { name: 'quotaGB', min: '0', step: '10', value: settings.quotaGB || 0 }),
+          hintEl('加入下载前会先比一次剩余空间与配额。'),
+        ]),
+      ]),
+      switchEl(checkboxEl({ name: 'autoOrganize', checked: settings.autoOrganize ? true : null }),
+        '下载完成后按「片名 (年份)/」归档'),
+      switchEl(checkboxEl({ name: 'writeNfo', checked: settings.writeNfo ? true : null }),
+        '同时写 .nfo 与海报，Jellyfin / Emby 可直接识别'),
+      switchEl(checkboxEl({ name: 'deleteSamples', checked: settings.deleteSamples === false ? null : true }),
+        '整理时清掉样本文件'),
+      el('div', { class: 'row row--wrap' }, [
+        buttonEl({ class: 'btn', 'data-action': 'organize-now' }, 'folder-plus', '立即整理已完成的任务'),
+        el('span', { class: 'field__hint', id: 'organize-result' }),
+      ]),
+    ]),
+
+    el('div', { class: 'settings__savebar' }, [
       buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '保存设置'),
       buttonEl({ class: 'btn', 'data-action': 'reload' }, null, '重新载入'),
+      linkEl({ class: 'btn btn--ghost', href: '#/health' }, 'activity', '运行状况'),
+      el('p', { class: 'notice notice--muted', id: 'settings-message', hidden: true }),
     ]),
-    el('h3', { class: 'panel__title', style: 'margin-top:18px', text: '下载与整理' }),
-    el('label', { class: 'field' }, [
-      el('span', { class: 'field__label', text: '配额上限（GB，0 表示不限）' }),
-      inputEl('number', { name: 'quotaGB', min: '0', step: '10', value: settings.quotaGB || 0 }),
-      hintEl('加入下载前会先比一次剩余空间与配额，装不下就直接拒绝并说明原因。'),
-    ]),
-    switchEl(checkboxEl({ name: 'autoOrganize', checked: settings.autoOrganize ? true : null }),
-      '下载完成后按「片名 (年份)/」归档'),
-    switchEl(checkboxEl({ name: 'writeNfo', checked: settings.writeNfo ? true : null }),
-      '同时写 .nfo 与海报，Jellyfin / Emby 可直接识别'),
-    switchEl(checkboxEl({ name: 'deleteSamples', checked: settings.deleteSamples === false ? null : true }),
-      '整理时清掉样本文件'),
-    el('div', { class: 'row row--wrap' }, [
-      buttonEl({ class: 'btn', 'data-action': 'organize-now' }, 'folder-plus', '立即整理已完成的任务'),
-      el('span', { class: 'field__hint', id: 'organize-result' }),
-    ]),
-    el('h3', { class: 'panel__title', style: 'margin-top:18px', text: '运维' }),
-    el('div', { class: 'row row--wrap', style: 'margin-top:10px' }, [
-      linkEl({ class: 'btn', href: '#/health' }, 'activity', '运行状况'),
-    ]),
-    el('p', { class: 'notice notice--muted', id: 'settings-message', hidden: true }),
   ]);
-  return form;
 }
 
 
@@ -3320,6 +3344,12 @@ function readPickerPayload(event) {
   return { value: value, raw: stringifyForDebug(source) };
 }
 
+/* 懒猫平台的网盘选择器是一个自定义元素，只在平台里由平台脚本注入。
+   Docker 部署没有它，此时相关入口要么隐藏、要么给出明确的降级提示。 */
+function hasCloudPicker() {
+  return !!(window.customElements && customElements.get('lzc-file-picker'));
+}
+
 function openFilePicker(kind) {
   return new Promise(function (resolve) {
     const host = $('#picker-host');
@@ -3351,9 +3381,9 @@ function openFilePicker(kind) {
     $('#picker-close').addEventListener('click', function () { finish(''); });
 
     const mount = $('#picker-mount');
-    if (!window.customElements || !customElements.get('lzc-file-picker')) {
+    if (!hasCloudPicker()) {
       fill(mount, el('div', { class: 'notice notice--err' },
-        el('p', { class: 'notice__text', text: '网盘选择器脚本没有加载成功，请刷新页面后重试。' })));
+        el('p', { class: 'notice__text', text: '当前部署没有网盘选择器，请改用「选择本机种子文件」。' })));
       return;
     }
 
@@ -3462,11 +3492,13 @@ function openImportDialog(prefill) {
       valueBox,
     ]),
     el('div', { class: 'row row--wrap' }, [
-      buttonEl({ class: 'btn', 'data-action': 'pick-torrent-cloud' }, 'folder', '从网盘选择种子'),
+      hasCloudPicker()
+        ? buttonEl({ class: 'btn', 'data-action': 'pick-torrent-cloud' }, 'folder', '从网盘选择种子')
+        : null,
       buttonEl({ class: 'btn', 'data-action': 'pick-torrent-local' }, 'file', '选择本机种子文件'),
     ]),
     fileInput,
-    el('p', { class: 'field__hint', text: '支持 magnet 链接、40 位 infoHash，以及网盘或平台传入的种子文件地址。' }),
+    el('p', { class: 'field__hint', text: '支持 magnet 链接、40 位 infoHash，或选择本机 .torrent 文件。' }),
     el('p', { class: 'field__hint', id: 'import-picked', hidden: true }),
     el('div', { class: 'modal__foot' }, [
       buttonEl({ class: 'btn', 'data-close': true }, null, '取消'),

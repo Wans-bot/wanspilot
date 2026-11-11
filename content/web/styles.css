@@ -1644,3 +1644,80 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
   font-size: 0.78rem;
   word-break: break-all;
 }
+
+/* ============================== 设置页：分组卡片 ==============================
+   一整张长表单拆成 4 张卡（数据源 / qB / 筛选 / 下载整理），
+   标题下面带一句说明；保存一条单独拎出来放在最下面。 */
+
+.settings__main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.panel__head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 标题后面紧跟说明，去掉旧的 10px 下边距 */
+.panel__head-text > .panel__title {
+  margin: 0;
+  font-size: 0.98rem;
+  letter-spacing: 0.01em;
+}
+
+.panel__sub {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.settings__savebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.settings__savebar .btn { min-width: 104px; justify-content: center; white-space: nowrap; }
+.settings__savebar > .notice { flex: 1 1 100%; margin: 0; }
+
+/* 单栏之后卡片之间不用再留原来的大间距 */
+@media (max-width: 960px) {
+  .settings { gap: 18px; }
+}
+
+/* 手机上保存条吸在底部标签栏上方，滚到哪都能存 */
+@media (max-width: 700px) {
+  .settings__savebar {
+    position: sticky;
+    bottom: calc(70px + env(safe-area-inset-bottom));
+    z-index: 3;
+    padding: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  }
+  .settings__savebar { gap: 8px; }
+  .settings__savebar .btn { flex: 1 1 auto; min-width: 0; padding: 9px 10px; }
+  .settings__savebar > .notice { flex: 1 1 100%; }
+}
+
+/* 影视墙横向滑动条：手机上让下一张露出可见宽度，而不是只留一条缝 */
+@media (max-width: 700px) {
+  .rail { grid-auto-columns: minmax(112px, 36vw); gap: 12px; }
+  .rail-wrap::before,
+  .rail-wrap::after { width: 24px; }
+
+}
+
+/* 卡片的标题最多两行，但始终占满两行的高度：
+   同一排里标题一行 / 两行混在一起时，底下的「年份 · 类型」才能对齐 */
+.card__link > .card__title { min-height: 2.7em; }
