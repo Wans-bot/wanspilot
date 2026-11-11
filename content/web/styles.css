@@ -817,8 +817,7 @@ select { appearance: none; background-image: none; }
 
 /* ---------- 设置 ---------- */
 
-.settings { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 960px) { .settings { grid-template-columns: minmax(0, 1fr); } }
+/* 设置页的两列网格已改成左栏分区导航（见文件末尾 .settings-shell） */
 
 .panel {
   display: flex;
@@ -1309,7 +1308,7 @@ html[data-theme='light'] {
 .card__meta,
 .task__meta,
 .kv__value,
-field__hint { font-variant-numeric: tabular-nums; }
+.field__hint { font-variant-numeric: tabular-nums; }
 
 /* 棋子：方形细线 */
 .chip { border-radius: var(--radius-sm); background: transparent; }
@@ -1355,22 +1354,23 @@ textarea { border-radius: var(--radius-sm); }
 }
 .toast__icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--text-2); }
 .toast__text { flex: 1; min-width: 0; }
-/* 提示条底色一律不透明，只靠左侧色条与图标区分成功/失败，半透明底色在页面上看不清 */
+/* 提示条底色一律不透明，只靠整圈边框与图标区分成功/失败，半透明底色在页面上看不清 */
 .toast--ok {
   background: var(--toast-bg);
   border-color: var(--ok);
-  box-shadow: inset 3px 0 0 var(--ok), var(--shadow-2);
+  box-shadow: var(--shadow-2);
 }
 .toast--ok .toast__icon { color: var(--ok); }
 .toast--error {
   background: var(--toast-bg);
   border-color: var(--err);
-  box-shadow: inset 3px 0 0 var(--err), var(--shadow-2);
+  box-shadow: var(--shadow-2);
 }
 .toast--error .toast__icon { color: var(--err); }
 .toast--info {
   background: var(--toast-bg);
-  box-shadow: inset 3px 0 0 var(--line-strong), var(--shadow-2);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-2);
 }
 .toast--info .toast__icon { color: var(--text-2); }
 
@@ -1721,3 +1721,136 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
 /* 卡片的标题最多两行，但始终占满两行的高度：
    同一排里标题一行 / 两行混在一起时，底下的「年份 · 类型」才能对齐 */
 .card__link > .card__title { min-height: 2.7em; }
+
+/* ============================== 设置页：左栏分区 ==============================
+   下拉太长的根因是 4 张卡 + 自检 + 系统 + 日志叠在同一列。
+   现在左栏一列分区按钮，右栏一次只显示一组，页面高度收敛到「一屏一组」。 */
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+.settings__body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  max-width: 880px;
+}
+
+.settings-nav {
+  position: sticky;
+  top: calc(var(--nav-h) + 18px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-nav__item svg { width: 16px; height: 16px; flex: none; opacity: 0.8; }
+.settings-nav__item:hover { background: var(--hover); color: var(--text); }
+.settings-nav__item.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.settings-nav__item.is-active svg { opacity: 1; }
+.settings-nav__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 分区显隐：默认收起，命中的一组才出现 */
+.settings-shell [data-section] { display: none; }
+.settings-shell [data-section].is-active { display: flex; flex-direction: column; gap: 18px; }
+
+
+/* 「自检与系统」区没有表单字段，把保存条藏掉 */
+.settings__main.is-diag .settings__savebar { display: none; }
+/* 桌面端保存条吸底，切到哪个分区都能直接存 */
+@media (min-width: 901px) {
+  .settings__savebar { position: sticky; bottom: 16px; z-index: 3; box-shadow: var(--shadow-2); }
+}
+
+@media (max-width: 900px) {
+  .settings-shell { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .settings-nav::-webkit-scrollbar { display: none; }
+  .settings-nav__item { flex: 0 0 auto; padding: 8px 11px; }
+  .settings__body { max-width: none; }
+}
+
+/* ============================== 视觉细节打磨 ============================== */
+
+/* 面板标题下一条细分割线：内容再多也有段落感，不靠彩色边条 */
+.panel__head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.panel__title { letter-spacing: 0.01em; }
+
+/* 表单控件统一高度与聚焦环，避免各浏览器默认高度参差 */
+.field input,
+.field select,
+.settings__main input,
+.settings__main select,
+.modal input,
+.modal select { min-height: 38px; border-radius: var(--radius-sm); }
+
+.field input:focus-visible,
+.field select:focus-visible,
+.settings__main input:focus-visible,
+.settings__main select:focus-visible,
+.modal input:focus-visible,
+.modal select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 字段说明统一左对齐的细行距，长说明不再顶着输入框 */
+.field { gap: 7px; }
+.field__hint { line-height: 1.55; }
+
+/* 分区导航按钮在键盘聚焦时要看得见 */
+.settings-nav__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 日志与代码块用细滚动条，暗色主题下不刺眼 */
+.logs::-webkit-scrollbar,
+.debug::-webkit-scrollbar { width: 8px; height: 8px; }
+.logs::-webkit-scrollbar-thumb,
+.debug::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
+.logs::-webkit-scrollbar-track,
+.debug::-webkit-scrollbar-track { background: transparent; }
+
+/* 空状态 / 加载占位再松一点，页面不显得干瘪 */
+.empty, .loading { padding: 26px 16px; }
+
+/* 卡片悬停只提边框与极轻位移，不做放大与发光 */
+.card { transition: border-color 0.16s ease, transform 0.16s ease; }
+.card:hover { transform: translateY(-1px); }

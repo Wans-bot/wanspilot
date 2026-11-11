@@ -2824,6 +2824,36 @@ function openSubscribeDialog(detail, options) {
 
 let settingsStatus = null;
 
+/* 设置页分区：一屏只显示一组，左栏导航切换，避免一长条表单把页面拉到无限长。
+   id 同时是 panel 的 data-section，也是地址栏 ?tab= 的取值。 */
+const SETTINGS_SECTIONS = [
+  { id: 'tmdb', label: '数据源', icon: 'image' },
+  { id: 'qb', label: '下载', icon: 'download' },
+  { id: 'filter', label: '筛选与订阅', icon: 'filter' },
+  { id: 'files', label: '下载与整理', icon: 'folder' },
+  { id: 'diag', label: '自检与系统', icon: 'activity' },
+];
+let settingsTab = 'tmdb';
+
+function settingsSectionExists(id) {
+  return SETTINGS_SECTIONS.some(function (section) { return section.id === id; });
+}
+
+/** 左栏分区导航：桌面是竖排，窄屏收成一排可横滑的按钮。 */
+function settingsNavEl(active) {
+  return el('nav', { class: 'settings-nav', 'aria-label': '设置分区' },
+    SETTINGS_SECTIONS.map(function (section) {
+      const isActive = section.id === active;
+      return el('button', {
+        type: 'button',
+        class: classNames('settings-nav__item', isActive && 'is-active'),
+        'data-action': 'settings-tab',
+        'data-target': section.id,
+        'aria-current': isActive ? 'page' : null,
+      }, [iconNode(section.icon), el('span', { class: 'settings-nav__label', text: section.label })]);
+    }));
+}
+
 function checkItemEl(name, ok, message, extra) {
   const kind = ok === true ? 'ok' : (ok === false ? 'err' : 'warn');
   return el('li', { class: classNames('check', 'check--' + kind) }, [
@@ -2898,7 +2928,7 @@ function settingsCardEl(title, sub, children) {
 }
 
 function settingsFormEl(settings, highlightKey) {
-  return el('form', { class: 'settings__main', id: 'settings-form' }, [
+  const form = el('form', { class: 'settings__main', id: 'settings-form' }, [
     settingsCardEl('TMDB', '影视墙、搜索与详情页的数据来源', [
       el('div', { class: 'form-grid' }, [
         el('label', {
@@ -3042,6 +3072,18 @@ function settingsFormEl(settings, highlightKey) {
       el('p', { class: 'notice notice--muted', id: 'settings-message', hidden: true }),
     ]),
   ]);
+
+  // 前四张卡片按 SETTINGS_SECTIONS 的顺序贴上分区标记，只显示命中的那张；
+  // 最后一项「自检与系统」在表单外面，由 paintSettings 单独拼。
+  SETTINGS_SECTIONS.slice(0, 4).forEach(function (section, index) {
+    const card = form.children[index];
+    if (!card) return;
+    card.dataset.section = section.id;
+    card.classList.toggle('is-active', section.id === settingsTab);
+  });
+  // 「自检与系统」这一区没有表单字段，保存条留在页面上只会碍事
+  form.classList.toggle('is-diag', settingsTab === 'diag');
+  return form;
 }
 
 
@@ -3074,6 +3116,11 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   settingsStatus = status === undefined ? settingsStatus : status;
   const keyMissing = !settings.tmdbApiKey;
   const highlightKey = focusKey || keyMissing;
+
+  // 分区优先级：聚焦 TMDB Key > 地址栏 ?tab= > 上次停留的分区
+  const tabParam = ctx.route.params.get('tab');
+  if (focusKey) settingsTab = 'tmdb';
+  else if (tabParam && settingsSectionExists(tabParam)) settingsTab = tabParam;
 
   const callout = highlightKey
     ? el('div', { class: 'notice notice--accent' }, [
@@ -3119,11 +3166,19 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
       el('p', { class: 'page__sub', text: 'qBittorrent、TMDB、筛选条件与自检。' }),
     ])),
     callout,
-    el('div', { class: 'settings' }, [
-      settingsFormEl(settings, highlightKey),
-      statusBlockEl(settingsStatus, pending && !settingsStatus),
-      systemBlock,
-      logsBlock,
+    el('div', { class: 'settings-shell' }, [
+      settingsNavEl(settingsTab),
+      el('div', { class: 'settings__body' }, [
+        settingsFormEl(settings, highlightKey),
+        el('div', {
+          class: classNames('settings-group', settingsTab === 'diag' && 'is-active'),
+          'data-section': 'diag',
+        }, [
+          statusBlockEl(settingsStatus, pending && !settingsStatus),
+          systemBlock,
+          logsBlock,
+        ]),
+      ]),
     ]),
   ]));
 
@@ -3173,6 +3228,26 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   });
 
   currentActions.reload = function () { render(); };
+  /* 分区切换：只动 class，不重绘整页，避免表单里已输入的内容被冲掉。 */
+  currentActions['settings-tab'] = function (button) {
+    const target = button && button.getAttribute('data-target');
+    if (!target || !settingsSectionExists(target)) return;
+    settingsTab = target;
+    document.querySelectorAll('.settings-nav__item').forEach(function (item) {
+      const isActive = item.getAttribute('data-target') === target;
+      item.classList.toggle('is-active', isActive);
+      if (isActive) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('.settings-shell [data-section]').forEach(function (node) {
+      node.classList.toggle('is-active', node.getAttribute('data-section') === target);
+    });
+    const form = document.querySelector('#settings-form');
+    if (form) form.classList.toggle('is-diag', target === 'diag');
+    try { history.replaceState(null, '', '#/settings?tab=' + target); } catch (error) { /* 忽略 */ }
+    const shell = document.querySelector('.settings-shell');
+    if (shell) shell.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  };
   currentActions['toggle-key'] = function (button) {
     const input = $('#set-tmdb-key');
     if (!input) return;
