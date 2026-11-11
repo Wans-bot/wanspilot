@@ -30,17 +30,43 @@ export class QBError extends Error {
   }
 }
 
-/** 去掉末尾斜杠与多余空白；不是 http(s) 就抛错，避免把 file:// 之类塞进 fetch。 */
+/**
+ * 地址里出现回环主机名/地址就判定为「填错了」。
+ * 容器内的 127.0.0.1 指向 wanspilot 自己，永远连不到 NAS 上的 qB。
+ */
+export function isLoopbackUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return false;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+  try {
+    const host = new URL(withScheme).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '0.0.0.0' || host === '::1' || /^127\./.test(host);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 去掉末尾斜杠与多余空白，缺 scheme 时补 http://；
+ * 回环地址直接拒绝并给出可执行的提示，避免用户以为「地址填了却连不上」。
+ */
 export function normalizeBaseUrl(raw) {
   const value = String(raw || '').trim().replace(/\/+$/, '');
   if (!value) return '';
-  if (!/^https?:\/\/[^/\s]+/i.test(value)) {
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+  if (!/^https?:\/\/[^/\s]+/i.test(withScheme)) {
     throw new QBError(`qBittorrent 地址应形如 http://192.168.1.10:8080，当前是「${raw}」`, {
       statusCode: 400,
       kind: 'config',
     });
   }
-  return value;
+  if (isLoopbackUrl(withScheme)) {
+    throw new QBError(
+      'qBittorrent 地址不能填 127.0.0.1 / localhost：容器里的回环地址指向 wanspilot 自己。请填 NAS 的局域网 IP，例如 http://192.168.31.119:8585',
+      { statusCode: 400, kind: 'config' },
+    );
+  }
+  return withScheme;
 }
 
 export class QBClient {
@@ -109,7 +135,11 @@ export class QBClient {
       res = await fetch(url, init);
     } catch (err) {
       const reason = err?.name === 'TimeoutError' ? `超时（${TIMEOUT_MS} ms）` : (err?.message || String(err));
-      throw new QBError(`连不上 qBittorrent（${this.baseUrl}）：${reason}`, { kind: 'network' });
+      throw new QBError(
+        `连不上 qBittorrent（${this.baseUrl}）：${reason}。请确认地址是 NAS 的局域网 IP + qB WebUI 端口，`
+        + '且该端口从容器里可访问（qB 的 WebUI 需监听 0.0.0.0，不能只绑 127.0.0.1）。',
+        { kind: 'network' },
+      );
     }
 
     const setCookies = typeof res.headers.getSetCookie === 'function'

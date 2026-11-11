@@ -326,7 +326,17 @@ async function handleApi(req, res, url) {
           }
         : getSettings();
       try {
-        const info = await clientFromSettings(probe).probe();
+        const client = clientFromSettings(probe);
+        if (!client) {
+          sendJson(res, 200, {
+            ok: false,
+            message: '还没有填写 qBittorrent 地址：请填 http://<NAS 局域网 IP>:<qB 端口>，不要用 127.0.0.1 / localhost',
+            version: '',
+            apiVersion: '',
+          });
+          return true;
+        }
+        const info = await client.probe();
         const version = info.version || '';
         sendJson(res, 200, {
           ok: true,

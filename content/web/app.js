@@ -38,12 +38,6 @@ const SUB_STATES = {
   error: { label: '出错', kind: 'err' }
 };
 
-/* 浏览分类取 API.md 允许的取值。 */
-const CATEGORIES = {
-  movie: [['popular', '热门'], ['top_rated', '高分'], ['now_playing', '正在上映'], ['upcoming', '即将上映']],
-  tv: [['popular', '热门'], ['top_rated', '高分'], ['airing_today', '今日播出'], ['on_the_air', '正在播出']],
-  anime: [['popular', '热门'], ['top_rated', '高分'], ['on_the_air', '正在播出']]
-};
 
 const PAGE_TITLES = {
   home: '影视墙', search: '搜索', subscribe: '订阅', calendar: '更新日历',
@@ -375,7 +369,7 @@ function cardKey(type, id) { return normalizeType(type) + ':' + id; }
 /** 取消订阅：海报卡与详情页共用，先确认再删；返回是否真的删掉了。 */
 /* 取消订阅只删订阅记录：已下载的文件与正在下载的任务都不动。
    直接生效，不再弹确认框（点实心收藏图标 = 取消，用户要求行为直白）。 */
-async function removeSubscription(id, label) {
+async function removeSubscription(id, _label) {
   if (!id) return false;
   try {
     await api('/subscriptions/' + encodeURIComponent(id), { method: 'DELETE' });
@@ -753,7 +747,7 @@ function stashDisplayed(host) {
 
 /** 数据变了就把相关页面作废，避免贴回旧内容。 */
 function dropStash(prefix) {
-  viewStash.forEach(function (value, key) {
+  viewStash.forEach(function (_value, key) {
     if (!prefix || key.indexOf(prefix) === 0) viewStash.delete(key);
   });
 }
@@ -2949,9 +2943,11 @@ function settingsFormEl(settings, highlightKey) {
           el('span', { class: 'field__label', text: 'qBittorrent 地址' }),
           inputEl('text', {
             id: 'set-qb-url', name: 'qbUrl', spellcheck: 'false',
-            value: settings.qbUrl || '', placeholder: 'http://192.168.1.10:8080',
+            value: settings.qbUrl || '', placeholder: 'http://192.168.31.119:8585',
           }),
-          hintEl('填 NAS 上 qBittorrent Web UI 的地址；留空表示不启用下载。'),
+          hintEl('填 NAS 的局域网 IP + qB 的 WebUI 端口，如 http://192.168.31.119:8585。'
+            + '不要填 127.0.0.1 或 localhost —— 容器里的回环地址指向 wanspilot 自己，连不到 qB。'
+            + '留空表示不启用下载。'),
         ]),
       ]),
       el('div', { class: 'form-grid' }, [
@@ -3307,7 +3303,7 @@ function stringifyForDebug(value) {
   const seen = new WeakSet();
   let text;
   try {
-    text = JSON.stringify(value, function (key, item) {
+    text = JSON.stringify(value, function (_key, item) {
       if (typeof item === 'function') return '[function]';
       if (typeof File !== 'undefined' && item instanceof File) {
         return '[File ' + item.name + ' ' + item.size + 'B]';

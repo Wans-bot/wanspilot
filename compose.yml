@@ -1,8 +1,15 @@
-# 用法：把下面的地址、账号和下载目录改成你自己的，然后
-#   docker compose up -d
+# yaml-language-server: $schema=./compose.schema.json
+# wanspilot：挑片 + 把任务交给 qBittorrent，自己不跑 BT 引擎。
 #
-# 前提：NAS 上已经装好 qBittorrent 且 Web UI 可访问。
-# wanspilot 只负责挑种子、加任务，下载/做种/限速都在 qB 里完成。
+# 用法：
+#   docker compose up -d
+#   docker compose logs -f      # 出现 [entry] wanspilot starting 即启动完成
+#
+# 部署时**不用**填 qB 的地址和账号：容器起来后打开 http://<NAS 局域网 IP>:3000
+# → 设置 → qBittorrent，在网页里填地址、用户名、密码，点「测试 qB 连接」通过后再保存。
+#
+# 地址务必填 NAS 的局域网 IP（例如 http://192.168.31.119:8585），
+# 不要填 127.0.0.1 / localhost —— 容器里的 127.0.0.1 指向 wanspilot 自己，连不到 NAS 上的 qB。
 
 services:
   wanspilot:
@@ -16,28 +23,11 @@ services:
       # 容器内以该 UID/GID 运行，建议与 NAS 上拥有下载目录的用户一致
       PUID: 1000
       PGID: 1000
-      # ---- qBittorrent（必填地址；账号留空表示 qB 免认证时直连）----
-      WP_QB_URL: http://192.168.1.10:8080
-      WP_QB_USERNAME: ""
-      WP_QB_PASSWORD: ""
-      # qB 视角的保存目录（写进 torrents/add 的 savepath）
-      WP_QB_SAVE_PATH: /downloads
-      # 上面那个目录在本容器里的挂载路径；不挂就留空，自动整理会跳过
-      WP_QB_LOCAL_PATH: /downloads
-      WP_QB_CATEGORY: wanspilot
-      # ---- 可选 ----
-      WP_TMDB_API_KEY: ""
+      # ---- 可选：预置 TMDB Key，省得进设置页填 ----
+      # WP_TMDB_API_KEY: ""
     volumes:
       - ./data:/data
-      # 关键：与 qB 的 savepath 指向宿主机同一个目录，
-      # 容器内路径与 qB 里的路径保持一致（这里都是 /downloads）
-      - /volume1/downloads:/downloads
-
-# 如果 qBittorrent 用的是 host 网络（绿联/群晖上很常见），wanspilot 也建议用 host：
-# 删掉上面的 ports:，改用 network_mode: host，WP_QB_URL 填 http://127.0.0.1:<qB端口>，
-# 这样能利用 qB 的「本地主机跳过认证」，不用往 NAS 里塞账号密码。
-#
-# 绿联 UGOS Pro 实测（2026-11-11）：
-#   qB 容器 network_mode: host，WebUI 8585，保存目录 /video ← 宿主机 /volume1/video
-#   wanspilot 同样 host 网络，WP_QB_URL=http://127.0.0.1:8585，
-#   WP_QB_SAVE_PATH=/video，WP_QB_LOCAL_PATH=/video，挂载 /volume1/video:/video
+      # 可选：想让 wanspilot 自己把下完的文件归档（写 .nfo/海报）时，再把 qB 的下载目录
+      # 按同一路径挂进来，然后在设置页「本地挂载路径」填容器内的路径。
+      # 不挂也能正常下载与看进度，只是自动整理会跳过。
+      # - /volume1/downloads:/downloads

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JsonStore } from './store.mjs';
 import { log } from './log.mjs';
+import { normalizeBaseUrl, isLoopbackUrl } from './qbittorrent.mjs';
 
 export const DATA_DIR = process.env.WP_DATA_DIR || '/data';
 export const DOWNLOAD_ROOT = process.env.WP_DOWNLOAD_DIR || '/downloads';
@@ -27,15 +28,17 @@ export const DEFAULT_SETTINGS = {
   // 留空 = 文件直接落在 $WP_DOWNLOAD_DIR 下（Docker 版默认）；填写则当作其下的子目录。
   downloadDir: '',
   // qBittorrent：wanspilot 自己不下载，任务全部交给用户已有的 qB。
+  // 部署时不预置任何 qB 参数，全部由用户在设置页填写后落在这里。
   // 地址留空 = 下载功能关闭；用户名留空 = 免认证直连（qB 开了「本地主机跳过认证」时）。
-  qbUrl: process.env.WP_QB_URL || '',
-  qbUsername: process.env.WP_QB_USERNAME || '',
-  qbPassword: process.env.WP_QB_PASSWORD || '',
+  // 地址必须填 NAS 的局域网 IP，127.0.0.1 / localhost 会被拒绝（那是容器自己）。
+  qbUrl: '',
+  qbUsername: '',
+  qbPassword: '',
   // 传给 torrents/add 的 savepath（qB 视角），留空表示用 qB 自己的默认保存目录
-  qbSavePath: process.env.WP_QB_SAVE_PATH || '',
+  qbSavePath: '',
   // 与 qbSavePath 等价的容器内路径，整理功能靠它读文件；留空表示没挂载下载目录
-  qbLocalPath: process.env.WP_QB_LOCAL_PATH || '',
-  qbCategory: process.env.WP_QB_CATEGORY || 'wanspilot',
+  qbLocalPath: '',
+  qbCategory: 'wanspilot',
   qualityPreference: '1080p',
   minSeeders: 5,
   maxSizeGB: 30,
@@ -57,6 +60,15 @@ export function initSettings() {
   store = new JsonStore(path.join(DATA_DIR, 'settings.json'), DEFAULT_SETTINGS, {
     debounceMs: 100,
   });
+
+  // 老版本可能通过环境变量写进过 127.0.0.1 / localhost：容器里的回环地址指向自己，
+  // 连不到 NAS 上的 qB。这里直接清空，让用户到设置页重新填局域网 IP。
+  const savedQbUrl = String(store.data.qbUrl || '').trim();
+  if (savedQbUrl && isLoopbackUrl(savedQbUrl)) {
+    store.data = { ...store.data, qbUrl: '' };
+    store.save();
+    log.warn(`[settings] 已清空配置里无效的 qB 地址「${savedQbUrl}」：容器内的 127.0.0.1/localhost 指向 wanspilot 自己，请到设置页填 NAS 的局域网 IP`);
+  }
   // 保证下载目录存在，否则下载引擎第一次抓取元数据就会失败。
   try {
     // qB 模式下本地目录可能没挂载，只有解析出具体路径才建
@@ -148,13 +160,9 @@ export function updateSettings(patch) {
     next.autoDownload = Boolean(patch.autoDownload);
   }
   if ('qbUrl' in patch) {
-    const v = String(patch.qbUrl ?? '').trim().replace(/\/+$/, '');
-    if (v && !/^https?:\/\/[^/\s]+/i.test(v)) {
-      const err = new Error('qBittorrent 地址应形如 http://192.168.1.10:8080');
-      err.statusCode = 400;
-      throw err;
-    }
-    next.qbUrl = v;
+    // normalizeBaseUrl 会补全 http://，并拒绝 127.0.0.1 / localhost —— 容器内的回环地址
+    // 指向 wanspilot 自己，永远连不到 NAS 上的 qB。校验失败抛的是带 400 的 QBError。
+    next.qbUrl = normalizeBaseUrl(patch.qbUrl);
   }
   if ('qbUsername' in patch) next.qbUsername = String(patch.qbUsername ?? '').trim();
   // 密码允许包含空格，只去首尾不可见字符
