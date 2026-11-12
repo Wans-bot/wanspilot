@@ -1,3 +1,5 @@
+import { selectedIds } from './subscription-rules.mjs';
+import { initNotifications, listNotifications, readNotifications, flushNotifications } from './notifications.mjs';
 import { auditOperation } from './audit.mjs';
 /**
  * wanspilot 后端入口：HTTP 服务、路由分发、静态资源托管、SSE 推送。
@@ -10,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { initAuth, authMode, authenticated, sameOrigin, login, logoutCookie } from './auth.mjs';
-import { log, initLog, tail } from './log.mjs';
+import { log, initLog, tail, redact } from './log.mjs';
 import {
   DATA_DIR,
   CACHE_DIR,
@@ -32,6 +34,7 @@ import { month as calendarMonth } from './calendar.mjs';
 import {
   initEngine,
   addTask,
+  batchTasks,
   listTasks,
   getTask,
   pauseTask,
@@ -51,6 +54,9 @@ import {
   updateSubscription,
   deleteSubscription,
   queueCheck,
+  batchSubscriptions,
+  subscriptionEpisodes,
+  markSubscriptionEpisodes,
   exportPayload,
   importPayload,
   startScheduler,
@@ -228,6 +234,21 @@ async function handleApi(req, res, url) {
   }
   if (pathname === '/api/auth/logout' && method === 'POST') {
     sendJson(res, 200, { ok: true }, { 'set-cookie': logoutCookie() }); return true;
+  }
+
+  if(pathname==='/api/notifications' && method==='GET'){listSubscriptions();const data=listNotifications();sendJson(res,200,url.searchParams.has('summary')?{unread:data.unread}:data);return true;}
+  if(pathname==='/api/notifications/read' && method==='POST'){
+    const body=await readBody(req);sendJson(res,200,readNotifications(body.ids===undefined?null:selectedIds(body.ids)));return true;
+  }
+  if(pathname==='/api/overview' && method==='GET'){
+    const subscriptions=listSubscriptions().items,tasks=listTasks(),settings=getSettings();
+    sendJson(res,200,{at:new Date().toISOString(),version:VERSION,
+      subscriptions:{total:subscriptions.length,enabled:subscriptions.filter(item=>item.enabled).length,checking:subscriptions.filter(item=>item.isChecking).length,errors:subscriptions.filter(item=>item.state==='error').length,
+        downloadedEpisodes:subscriptions.filter(item=>item.type!=='movie').reduce((sum,item)=>sum+item.downloadedKeys.length,0),pendingEpisodes:subscriptions.filter(item=>item.type!=='movie').reduce((sum,item)=>sum+item.pendingKeys.length,0)},
+      queue:subscriptions.filter(item=>item.enabled).sort((a,b)=>String(a.nextCheckAt || '').localeCompare(String(b.nextCheckAt || ''))).slice(0,12),
+      tasks:tasks.stats,capacity:capacityStatus(),engine:{ready:engineStats().ready,tasks:engineStats().tasks,lastError:redact(engineStats().lastError || '')},organizer:organizerStatus(),
+      readiness:{tmdbKeySet:Boolean(settings.tmdbApiKey),qbConfigured:Boolean(settings.qbUrl),autoDownload:settings.autoDownload!==false,checkIntervalMinutes:settings.checkIntervalMinutes},
+      notifications:listNotifications().items.slice(0,8),unread:listNotifications().unread});return true;
   }
 
   if (pathname === '/api/system') {
@@ -477,6 +498,7 @@ async function handleApi(req, res, url) {
   }
 
   /* ---- 任务 ---- */
+  if(pathname==='/api/tasks/batch' && method==='POST'){sendJson(res,200,await batchTasks(await readBody(req)));return true;}
   if (pathname === '/api/tasks' && method === 'GET') {
     const tasks = listTasks();
     const scoped = tasks.items || [];
@@ -557,6 +579,7 @@ async function handleApi(req, res, url) {
   }
 
   /* ---- 订阅 ---- */
+  if(pathname==='/api/subscriptions/batch' && method==='POST'){sendJson(res,200,batchSubscriptions(await readBody(req)));return true;}
   if (pathname === '/api/subscriptions' && method === 'GET') {
     sendJson(res, 200, listSubscriptions());
     return true;
@@ -606,6 +629,8 @@ async function handleApi(req, res, url) {
   if (seg[1] === 'subscriptions' && seg[2]) {
     const id = decodeURIComponent(seg[2]);
     const action = seg[3];
+    if(action==='episodes' && method==='GET'){const result=await subscriptionEpisodes(id,url.searchParams.get('season'));sendJson(res,result?200:404,result || {error:'订阅不存在'});return true;}
+    if(action==='episodes' && method==='PATCH'){const result=await markSubscriptionEpisodes(id,await readBody(req));sendJson(res,result?200:404,result || {error:'订阅不存在'});return true;}
     if (action === 'check' && method === 'POST') {
       const result = queueCheck(id);
       sendJson(res, result ? 202 : 404, result || { error: '订阅不存在' });
@@ -671,6 +696,7 @@ function shutdown(signal) {
   try {
     flushSettings();
     shutdownSubscriptions();
+    flushNotifications();
     shutdownEngine();
   } catch (err) {
     log.warn(`[app] 关闭下载引擎出错: ${err.message}`);
@@ -681,6 +707,7 @@ function shutdown(signal) {
 
 function main() {
   initLog(DATA_DIR);
+  initNotifications(DATA_DIR);
   initAuth(DATA_DIR);
   const cleanCache = () => pruneImageCache(CACHE_DIR).catch(err => log.warn(`[cache] 清理失败：${err.message}`));
   setTimeout(cleanCache, 30_000).unref();

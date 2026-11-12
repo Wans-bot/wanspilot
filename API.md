@@ -420,3 +420,17 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 业务写入、手动搜索、导入导出、登录退出、连接测试、整理预览与执行记录开始/结果/HTTP 状态。订阅内部额外记录创建、读取季、搜索范围及候选数、未匹配原因、qB 提交、完成、失败与下次检查。轮询、海报和静态文件请求不刷操作日志。禁止记录请求体、账号密码、Cookie、访问令牌、API Key；日志与订阅记录使用脱敏。
 
 `GET /api/logs?lines=1000` 返回最近记录，最大 2000 行。启动时恢复已有日志尾部。`/data/logs/wanspilot.log` 按 4 MiB 轮转并保留 `.1`；属于有界运行记录，不是无限期审计存储。设置页自动刷新、文本筛选和导出最近 2000 行。
+
+## 1.4.0 管理接口
+
+以下接口均需登录，写操作执行同源校验。时间字段保存为绝对时刻；客户端固定 `Asia/Shanghai` 展示，订阅导出的 exportedAt 为带 `+08:00` 的 ISO 时间。
+
+- `GET /api/overview`：订阅汇总、未来检查队列（最多 12 项）、下载/空间、连接与配置状态、最近 8 条通知；不返回配置凭据。
+- `GET /api/notifications`：`{items,unread}`；`?summary=1` 只返回 unread。
+- `POST /api/notifications/read`：`{ids:[...]}` 标记所选；`{}` 全部已读。
+- `POST /api/subscriptions/batch`：`{ids,action}`，action 为 check/pause/enable/auto-on/auto-off；1–50 个 ID，返回逐项 `{id,ok,message}`，不存在或暂停项不会导致其他项丢失结果。check 排队异步执行，并发最多 2。
+- `POST /api/tasks/batch`：`{ids,action}`，action 仅 pause/resume；返回 `{results,items,stats}`，逐项报告失败，不删除文件。
+- `GET /api/subscriptions/:id/episodes?season=1`：有效季列表及分集 `{key,name,airDate,status,inScope,task}`；状态 downloaded/downloading/missing/upcoming/unknown。
+- `PATCH /api/subscriptions/:id/episodes`：`{keys:["S01E01"],downloaded:true}`；单季最多 50 集，校验 TMDB 实际集号；检查进行中或已有下载任务时返回 409。仅调整记录，恢复待补可能触发下轮自动补集。
+
+订阅创建、更新与导入新增字段：includeKeywords/excludeKeywords（数组或逗号/换行分隔文本，每组最多 20 个、每个 80 字符，按字面匹配），codec（any/h264/h265/av1），minSizeGB（0–500，不超过 maxSizeGB），strictQuality（布尔），startEpisode（1–9999），endEpisode（0 不限，否则不小于 startEpisode），checkIntervalMinutes（0 继承全局，或 5–1440）。集号范围应用于每个订阅季，非全季范围不使用整季包。

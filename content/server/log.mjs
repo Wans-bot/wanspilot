@@ -1,3 +1,4 @@
+import { shanghaiTimestamp } from '../web/time.js';
 /**
  * 运行日志：内存环形缓冲 + 落盘追加。
  * 日志同时用于「设置」页的排障入口和实机验收取证，所以既留内存也留文件。
@@ -52,7 +53,7 @@ export function initLog(dataDir) {
 }
 
 function write(level, args) {
-  const time = new Date().toISOString();
+  const time = shanghaiTimestamp();
   const text = redact(args.map(a => { if(typeof a==='string') return a;if(a instanceof Error)return a.message;try{return JSON.stringify(a);}catch{return String(a);} }).join(' '));
   const line = `${time} [${level}] ${text}`;
 

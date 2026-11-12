@@ -1,3 +1,6 @@
+import { shanghaiDateTime, shanghaiTimestamp } from '../web/time.js';
+import { normalizeRules, matchesRules, episodeInScope, selectedIds } from './subscription-rules.mjs';
+import { notify } from './notifications.mjs';
 /**
  * 订阅：记录要追的影片，定期检查更新，发现新剧集就自动搜索并交给下载引擎。
  *
@@ -19,6 +22,9 @@ let timer = null;
 let running = false;
 const checks = new Map();
 const searchRuns = new Map();
+let activeChecks=0;
+const checkQueue=[];
+function checkSlot(){return new Promise(resolve=>{const enter=()=>{activeChecks++;resolve(()=>{activeChecks--;checkQueue.shift()?.();});};if(activeChecks<2)enter();else checkQueue.push(enter);});}
 
 let engineAdd = null;
 let resourceSearch = searchResources;
@@ -58,6 +64,7 @@ function activity(item, stage, message) {
   item.activity = event;
   item.history = [...(item.history || []),event].slice(-100);
   item.lastMessage = event.message;
+  if(['submitted','completed','error','warning','matched'].includes(stage))notify({kind:stage==='error'||stage==='warning'?'error':stage==='completed'?'success':'info',title:item.title || '订阅',message:event.message,subscriptionId:item.id});
   log[stage === 'error' ? 'warn' : 'info'](`[subs] 《${item.title || item.tmdbId}》(${item.id}) ${event.message}`);
   save();
 }
@@ -100,6 +107,7 @@ function decorate(item) {
     activity:item.activity || null,
     history:(item.history || []).slice(-100),
     downloads:downloadSnapshot(item),
+    ...normalizeRules({},item),
   };
 }
 
@@ -135,6 +143,7 @@ export function createSubscription(input) {
 
   const item = {
     id: newId(),
+    ...normalizeRules(input),
     type,
     tmdbId,
     title: String(input.title || '').trim(),
@@ -156,6 +165,7 @@ export function createSubscription(input) {
     totalEpisodes: 0,
   };
 
+  if(item.minSizeGB>item.maxSizeGB)throw Object.assign(new Error('最小体积不能大于最大体积'),{statusCode:400});
   items.push(item);
   store.data.items = items;
   save();
@@ -188,6 +198,10 @@ function normalizeSeasons(value) {
 export function updateSubscription(id, patch) {
   const item = findItem(id);
   if (!item) return null;
+  const rules=normalizeRules(patch,item);
+  if(rules.minSizeGB>clamp(patch.maxSizeGB ?? item.maxSizeGB,1,500,item.maxSizeGB))throw Object.assign(new Error('最小体积不能大于最大体积'),{statusCode:400});
+  Object.assign(item,rules);
+  if ('checkIntervalMinutes' in patch) item.nextCheckAt=new Date(Date.now()+(item.checkIntervalMinutes || getSettings().checkIntervalMinutes || 60)*60000).toISOString();
   if ('qualityPreference' in patch) item.qualityPreference = normalizeQuality(patch.qualityPreference, item.qualityPreference);
   if ('minSeeders' in patch) item.minSeeders = clamp(patch.minSeeders, 0, 100000, item.minSeeders);
   if ('maxSizeGB' in patch) item.maxSizeGB = clamp(patch.maxSizeGB, 1, 500, item.maxSizeGB);
@@ -317,7 +331,7 @@ export function pickBest(candidates, item, want, expectedTitles = [], options = 
   const expectedYear = want === 'movie' ? Number(item.year) || 0 : 0;
   const strictQuality = options.strictQuality || '';
   const filtered = candidates.filter((c) => {
-    if (!c.magnet) return false;
+    if (!c.magnet || !matchesRules(c,item)) return false;
     if (c.seeders < minSeeders) return false;
     if (c.sizeBytes > maxBytes) return false;
     if (strictQuality && c.resolution !== strictQuality) return false;
@@ -379,7 +393,7 @@ async function searchForTitle(item, params, localizedTitle, want, extraFilter, o
  * @returns {{best: object|null, checked: number, usedRung: string, fellBack: boolean}}
  */
 async function searchWithLadder(item, params, localizedTitle, want, extraFilter) {
-  const ladder = qualityLadder(item.qualityPreference);
+  const ladder = item.strictQuality ? [item.qualityPreference === 'any' ? '' : item.qualityPreference] : qualityLadder(item.qualityPreference);
   let checked = 0;
   for (const rung of ladder) {
     const found = await searchForTitle(item, params, localizedTitle, want, extraFilter, { strictQuality: rung });
@@ -507,7 +521,7 @@ async function checkTv(item) {
       const info=await mediaSeason({id:item.tmdbId,season:seasonNumber});
       const seen=new Set();
       for (const episode of info.episodes || []) {
-        if (!Number.isInteger(episode.episodeNumber) || episode.episodeNumber<1 || !isAired(episode.airDate)) continue;
+        if (!Number.isInteger(episode.episodeNumber) || !episodeInScope(item,seasonNumber,episode.episodeNumber) || !isAired(episode.airDate)) continue;
         const key=epKey(seasonNumber,episode.episodeNumber);if(seen.has(key))continue;seen.add(key);
         aired.push({season:seasonNumber,episode:episode.episodeNumber,key});
       }
@@ -528,7 +542,7 @@ async function checkTv(item) {
     if (attempts>=5 || item.cancelled || item.enabled===false) break;
     if (known.has(ep.key)) continue;
     const sameSeason=sorted.filter(e=>e.season===ep.season && !known.has(e.key));
-    if (sameSeason.length>=4 && !packed.has(ep.season)) {
+    if (sameSeason.length>=4 && Number(item.startEpisode || 1)===1 && !item.endEpisode && !packed.has(ep.season)) {
       packed.add(ep.season);
       const found=await searchWithLadder(item,{type:'tv',season:ep.season,year:item.year,qualityPreference:item.qualityPreference},detail.title,'pack',c=>c.isSeasonPack && (c.season===null || c.season===ep.season));
       checked+=found.checked;
@@ -584,7 +598,8 @@ function reconcileDownloads(item) {
 
 export function runCheck(item) {
   if (checks.has(item.id)) return checks.get(item.id);
-  const work = performCheck(item).finally(() => checks.delete(item.id));
+  if(activeChecks>=2)activity(item,'queued','检查已排队，等待前面的订阅完成');
+  const work = checkSlot().then(async release=>{try{if(item.cancelled || item.enabled===false)return {ran:false,message:'订阅已暂停或取消'};return await performCheck(item);}finally{release();}}).finally(() => checks.delete(item.id));
   checks.set(item.id, work);
   return work;
 }
@@ -603,12 +618,12 @@ async function performCheck(item) {
     item.state = err.code === 'SEARCH_BUDGET' ? 'watching' : 'error';
   }
   item.lastCheckAt = started.toISOString();
-  const interval = getSettings().checkIntervalMinutes || 60;
+  const interval = item.checkIntervalMinutes || getSettings().checkIntervalMinutes || 60;
   item.nextCheckAt = new Date(Date.now() + interval * 60000).toISOString();
   item.checkInProgress=false;
   searchRuns.delete(item.id);
   if (item.enabled === false) item.state='paused';
-  activity(item,item.state==='error'?'error':item.enabled===false?'paused':'waiting',item.lastMessage+'；'+(item.enabled===false?'订阅已暂停':'下次检查 '+item.nextCheckAt));
+  activity(item,item.state==='error'?'error':item.enabled===false?'paused':'waiting',item.lastMessage+'；'+(item.enabled===false?'订阅已暂停':'下次检查 '+shanghaiDateTime(item.nextCheckAt)+'（上海时间）'));
   return { ran: true, found: result.found, added: result.added, message: item.lastMessage };
 }
 
@@ -624,6 +639,56 @@ export async function checkNow(id) {
   const item = findItem(id);
   if (!item) return null;
   return runCheck(item);
+}
+
+/** Batch operations return partial results. No batch deletion or file deletion is exposed. */
+export function batchSubscriptions(input) {
+  const ids=selectedIds(input.ids),action=String(input.action || '');
+  if(!['check','pause','enable','auto-on','auto-off'].includes(action))throw Object.assign(new Error('不支持的批量操作'),{statusCode:400});
+  const results=ids.map(id=>{
+    try {
+      const item=findItem(id);if(!item)throw new Error('订阅不存在');
+      if(action==='check'){const result=queueCheck(id);return {id,ok:result.ran,message:result.message};}
+      const patch=action==='pause'?{enabled:false}:action==='enable'?{enabled:true}:{autoDownload:action==='auto-on'};
+      updateSubscription(id,patch);return {id,ok:true,message:'已更新'};
+    }catch(err){return {id,ok:false,message:err.message};}
+  });
+  log.info('[subs] 批量 '+action+'：'+results.filter(r=>r.ok).length+'/'+results.length+' 成功');
+  return {results};
+}
+export async function subscriptionEpisodes(id,seasonNumber) {
+  const item=findItem(id);if(!item)return null;
+  if(item.type==='movie')throw Object.assign(new Error('电影没有分集信息'),{statusCode:400});
+  const detail=await mediaDetail({type:'tv',id:item.tmdbId});
+  const seasons=(detail.seasons || []).filter(s=>Number(s.seasonNumber)>0);
+  const selected=Number(seasonNumber || item.seasons?.[0] || seasons.at(-1)?.seasonNumber);
+  if(!Number.isInteger(selected)||selected<1||!seasons.some(s=>Number(s.seasonNumber)===selected))throw Object.assign(new Error('请选择有效的季'),{statusCode:400});
+  const info=await mediaSeason({id:item.tmdbId,season:selected});
+  reconcileDownloads(item);
+  const episodes=(info.episodes || []).filter(e=>Number.isInteger(e.episodeNumber)&&e.episodeNumber>0).map(e=>{
+    const key=epKey(selected,e.episodeNumber),taskId=item.pendingTasks?.[key],task=taskId?subscribeKeysFactory?.(taskId):null;
+    return {key,episode:e.episodeNumber,name:e.name || '',airDate:e.airDate || '',inScope:episodeInScope(item,selected,e.episodeNumber),
+      status:item.downloadedKeys.includes(key)?'downloaded':taskId?'downloading':!e.airDate?'unknown':isAired(e.airDate)?'missing':'upcoming',
+      task:task?{id:task.id,state:task.state,progress:Number(task.progress)||0}:null};
+  });
+  return {id,title:item.title,season:selected,seasons,episodes};
+}
+export async function markSubscriptionEpisodes(id,input) {
+  const item=findItem(id);if(!item)return null;
+  const keys=selectedIds(input.keys);
+  if(keys.some(key=>!/^S\d{2,4}E\d{2,4}$/.test(key)))throw Object.assign(new Error('无效的季集编号'),{statusCode:400});
+  if(typeof input.downloaded!=='boolean')throw Object.assign(new Error('请指定已下载或待补'),{statusCode:400});
+  const groups=new Map();
+  for(const key of keys){const season=Number(key.match(/^S(\d+)E/)[1]);if(!groups.has(season))groups.set(season,[]);groups.get(season).push(key);}
+  if(groups.size>1)throw Object.assign(new Error('请每次调整同一季的记录'),{statusCode:400});
+  const data=await subscriptionEpisodes(id,[...groups.keys()][0]);
+  const valid=new Map(data.episodes.map(e=>[e.key,e]));
+  for(const key of keys){if(!valid.has(key))throw Object.assign(new Error('集号不在 TMDB 季信息中'),{statusCode:400});if(item.pendingTasks?.[key])throw Object.assign(new Error('包含已提交的下载任务，请先在下载器处理该任务'),{statusCode:409});}
+  if(checks.has(id))throw Object.assign(new Error('正在检查订阅，请等待本轮结束后再修改记录'),{statusCode:409});
+  const downloaded=new Set(item.downloadedKeys || []);for(const key of keys){if(input.downloaded)downloaded.add(key);else downloaded.delete(key);}
+  item.downloadedKeys=[...downloaded];
+  activity(item,'updated','手动'+(input.downloaded?'标记已下载':'恢复待补')+'：'+keys.join('、')+'（仅修改记录，不操作文件）');
+  return {item:decorate(item)};
 }
 
 /** 调度循环：每 30 秒看一次有没有到期该检查的订阅。 */
@@ -689,7 +754,7 @@ export function exportPayload() {
   return {
     format: 'wanspilot-subscriptions',
     version: 1,
-    exportedAt: new Date().toISOString(),
+    exportedAt: shanghaiTimestamp(),
     items: items.map(decorate),
   };
 }
@@ -715,8 +780,10 @@ export function importPayload(payload) {
       skipped += 1;
       continue;
     }
+    let rules;try{rules=normalizeRules(raw);if(rules.minSizeGB>Number(raw.maxSizeGB || 30))throw new Error('size');}catch{skipped++;continue;}
     items.push({
       id: newId(),
+      ...rules,
       type,
       tmdbId,
       title: String(raw.title || '').trim(),

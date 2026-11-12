@@ -4,12 +4,13 @@ export function operationFor(method, pathname) {
   const exact = {
     'POST /api/auth/login':'登录', 'POST /api/auth/logout':'退出登录',
     'PUT /api/settings':'保存设置', 'POST /api/settings':'保存设置', 'POST /api/settings/test':'测试连接',
-    'POST /api/tasks':'添加下载任务', 'POST /api/subscriptions':'创建订阅',
+    'POST /api/tasks':'添加下载任务', 'POST /api/tasks/batch':'批量管理下载', 'POST /api/subscriptions/batch':'批量管理订阅','POST /api/notifications/read':'标记通知已读', 'POST /api/subscriptions':'创建订阅',
     'POST /api/subscriptions/import':'导入订阅', 'GET /api/subscriptions/export':'导出订阅',
     'POST /api/organizer/run':'执行文件整理', 'GET /api/organizer/preview':'预览文件整理',
     'GET /api/resources':'手动搜索资源', 'GET /api/tmdb/search':'搜索影视',
   };
   if (exact[method+' '+pathname]) return exact[method+' '+pathname];
+  if (/^\/api\/subscriptions\/[^/]+\/episodes$/.test(pathname) && method==='PATCH') return '调整逐集下载记录';
   if (/^\/api\/subscriptions\/[^/]+\/check$/.test(pathname) && method==='POST') return '立即检查订阅';
   if (/^\/api\/subscriptions\/[^/]+\/upgrade$/.test(pathname)) return method==='POST'?'升级订阅画质':method==='DELETE'?'忽略画质升级':null;
   if (/^\/api\/subscriptions\/[^/]+$/.test(pathname)) return method==='PATCH'?'修改订阅':method==='DELETE'?'取消订阅':null;

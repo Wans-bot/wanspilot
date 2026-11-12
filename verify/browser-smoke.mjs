@@ -41,12 +41,19 @@ async function install(page) {
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', dialog => dialog.accept());
   await page.evaluateOnNewDocument(() => { sessionStorage.setItem('wanspilot.openingSeen', '1'); localStorage.setItem('wanspilot.theme', 'dark'); });
+  await page.emulateTimezone('America/Los_Angeles');
   await page.setRequestInterception(true);
   page.on('request', async req => {
     try {
       const url = new URL(req.url());
       if (url.origin !== base) return req.continue();
       const json = body => req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if(url.pathname==='/api/notifications')return json({items:[{id:'notice-1',title:'订阅已提交',message:'Example 已提交 1 集',kind:'submitted',read:false,at:'2026-12-31T16:00:00Z'}],unread:1});
+      if(url.pathname==='/api/notifications/read')return json({unread:0,items:[]});
+      if(url.pathname==='/api/overview')return json({at:'2026-12-31T16:00:00Z',subscriptions:{total:5,enabled:4,checking:1},tasks:tasks.stats,capacity:{known:true,freeBytes:600*1024**3},engine:{ready:true},readiness:{tmdbKeySet:true,qbConfigured:true},queue:subs.slice(0,2),notifications:[]});
+      if(url.pathname==='/api/subscriptions/batch'){const body=JSON.parse(req.postData());return json({results:body.ids.map(id=>{const item=subs.find(s=>s.id===id);if(item&&body.action==='pause')item.enabled=false;return {id,ok:!!item,message:item?'已更新':'不存在'};})});}
+      if(url.pathname==='/api/tasks/batch'){const body=JSON.parse(req.postData());body.ids.forEach(id=>{const item=tasks.items.find(t=>t.id===id);if(item)item.state=body.action==='pause'?'paused':'downloading';});return json({...tasks,results:body.ids.map(id=>({id,ok:true,message:'已更新'}))});}
+      if(/^\/api\/subscriptions\/[^/]+\/episodes$/.test(url.pathname))return json({season:1,seasons:[{seasonNumber:1,name:'第 1 季'}],episodes:Array.from({length:65},(_,i)=>({key:'S01E'+String(i+1).padStart(2,'0'),name:'测试集 '+(i+1),airDate:'2026-01-01',status:i===0?'downloading':'missing',inScope:true}))});
       if (url.pathname === '/api/settings' && req.method() === 'PUT' && JSON.parse(req.postData()).qbUsername === 'SAVE-FAILURE') return req.respond({ status: 507, contentType: 'application/json', body: '{"error":"测试：磁盘不可写"}' });
       if (url.pathname === '/api/logs') {logReads++;return req.respond({status:200,contentType:'text/plain',body:'2026-11-12 [INFO] [subs] 创建订阅 Example\n2026-11-12 [INFO] 正在搜索 S01E01\n刷新次数 '+logReads});}
       if (/^\/api\/subscriptions\/[^/]+\/check$/.test(url.pathname)) {
@@ -209,10 +216,30 @@ try {
   await page.evaluate(()=>{const img=document.querySelector('.rail .card img');img.src='/missing-poster-for-acceptance.png';});
   await page.waitForSelector('.poster__empty');
   record('responsive backdrop and poster error fallback');
-  const routes = [['search', '#/search', '.grid .card'], ['detail', '#/detail/movie/' + cards[0].id, '.hero__title'], ['resources', '#/resources/movie/1?title=Example', '.res'], ['tasks', '#/tasks', '.task'], ['subscribe', '#/subscribe', '.sub-card'], ['calendar', '#/calendar', '.cal__grid'], ['health', '#/health', '.grid--cards .panel']];
+  const routes = [['search', '#/search', '.grid .card'], ['detail', '#/detail/movie/' + cards[0].id, '.hero__title'], ['resources', '#/resources/movie/1?title=Example', '.res'], ['tasks', '#/tasks', '.task'], ['subscribe', '#/subscribe', '.sub-card'], ['calendar', '#/calendar', '.cal__grid'], ['health', '#/health', '.grid--cards .panel'], ['overview','#/overview','.overview-grid'], ['notifications','#/notifications','.notification-item']];
   for (const [name, hash, selector] of routes) {
     await page.evaluate(hash => { location.hash = hash; }, hash); await page.waitForSelector(selector); await checkLayout(page, name + ' desktop'); await page.screenshot({ path: path.join(out, name + '-desktop.png') });
   }
+  await page.evaluate(()=>{location.hash='#/notifications';});await page.waitForSelector('.notification-item time');
+  assert.ok((await page.$eval('.notification-item time',n=>n.textContent)).includes('2027-01-01 00:00'));
+  assert.equal(await page.evaluate(()=>Intl.DateTimeFormat().resolvedOptions().timeZone),'America/Los_Angeles');
+  await page.click('[aria-label="标记已读 订阅已提交"]');await pause(250);record('Shanghai display ignores browser zone and notification read succeeds');
+  await page.evaluate(()=>{location.hash='#/tasks';});await page.waitForSelector('.task-select');
+  await page.select('[aria-label="任务状态"]','completed');assert.equal(await page.$$('.task').then(a=>a.length),1);
+  await page.select('[aria-label="任务状态"]','all');await page.click('.task-select');await page.click('[data-task-batch="pause"]');await page.waitForSelector('.batch-results');
+  assert.ok((await page.$eval('.batch-results',n=>n.textContent)).includes('成功 1 / 1'));await page.click('.modal [data-close]');
+  await page.click('.task-select');record('task state filters and selected batch pause');
+  await page.evaluate(()=>{location.hash='#/subscribe';});await page.waitForSelector('.sub-card');
+  await page.click('.sub-card__select input');await page.click('[data-sub-batch="auto-off"]');await page.waitForSelector('.batch-results');await page.click('.modal [data-close]');record('subscription batch explicit selection');
+  await page.click('.sub-tabs a[href$="type=tv"]');await page.waitForSelector('[data-action="sub-episodes"]');
+  await page.click('[data-action="sub-episodes"]');await page.waitForSelector('.episode-row');
+  assert.equal(await page.$$('.episode-row').then(a=>a.length),50);
+  assert.equal(await page.$eval('.episode-row input',n=>n.disabled),true);
+  await page.click('.episode-row:nth-child(2) input');assert.ok((await page.$eval('.episode-manager',n=>n.textContent)).includes('已选 1 集'));
+  await page.screenshot({path:path.join(out,'episode-manager-desktop.png')});
+  await page.evaluate(()=>[...document.querySelectorAll('.episode-manager button')].find(n=>n.textContent.includes('下一页')).click());
+  assert.equal(await page.$$('.episode-row').then(a=>a.length),15);
+  await page.click('.modal [data-close]');record('episode manager paginates and protects active downloads');
   await page.evaluate(() => { location.hash = '#/calendar'; }); await page.waitForSelector('.cal__grid');
   assert.equal(await page.$eval('.cal-metric:nth-child(3) strong',n=>n.textContent),'17');
   await page.click('.cal-metric:nth-child(3)');await page.waitForSelector('.cal-agenda__day[data-date="2025-10-01"]');

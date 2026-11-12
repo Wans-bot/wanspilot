@@ -1,3 +1,5 @@
+import { filterTasks, filterSubscriptions } from './automation-model.js';
+import { shanghaiDate, shanghaiTime, shanghaiDateTime } from './time.js';
 /* WansPilot 前端入口。
  * 无构建步骤：浏览器把它当 ES 模块直接加载，接口契约见仓库根目录 API.md。
  */
@@ -42,7 +44,7 @@ const SUB_STATES = {
 
 const PAGE_TITLES = {
   home: '影视墙', search: '搜索', subscribe: '订阅', calendar: '更新日历',
-  tasks: '下载任务', settings: '设置', detail: '影视详情', resources: '资源'
+  overview:'运行总览', notifications:'通知中心', tasks: '下载任务', settings: '设置', detail: '影视详情', resources: '资源'
 };
 
 /* ---------- 图标（全部内联 SVG，不依赖任何外域资源） ---------- */
@@ -212,6 +214,7 @@ function kvRowEl(key, value) {
   ]);
 }
 
+function $$(selector, root) { return [...(root || document).querySelectorAll(selector)]; }
 function $(selector, root) { return (root || document).querySelector(selector); }
 
 function fmtBytes(bytes) {
@@ -263,20 +266,8 @@ function fmtUptime(seconds) {
 
 function pad2(value) { return String(value).padStart(2, '0'); }
 
-function fmtDateTime(iso) {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return String(iso);
-  return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate())
-    + ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return String(iso);
-  return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate());
-}
+function fmtDateTime(iso) { return iso ? shanghaiDateTime(iso) || String(iso) : '—'; }
+function fmtDate(iso) { return iso ? shanghaiDate(iso) || String(iso) : '—'; }
 
 /* 所有海报、剧照、背景图都经后端图片接口，前端不直连图片站点。 */
 function imageUrl(path, size) {
@@ -909,7 +900,7 @@ function homeBlocksEl(data) {
       section.dataset.collection = String(index + 1).padStart(2, '0');
       return section;
     }),
-    el('footer', { class: 'cinema-footer' }, [el('span', { text: 'WansPilot' }), el('span', { text: '好故事，永不落幕。' }), linkEl({ href: '#/health' }, 'activity', '系统状态')]),
+    el('footer', { class: 'cinema-footer' }, [el('span', { text: 'WansPilot' }), el('span', { text: '好故事，永不落幕。' }), linkEl({ href: '#/overview' }, 'activity', '运行总览')]),
   ]);
   page.classList.add('page--home');
   return page;
@@ -1849,6 +1840,9 @@ const live = {
 
 const taskState = { items: [], stats: null };
 const taskNodes = new Map();
+const selectedTasks=new Set();
+const taskFilters={q:'',status:'all',sort:'added'};
+let taskBatchBusy=false;
 
 function activeTaskCount() {
   return taskState.items.filter(function (item) {
@@ -1982,6 +1976,7 @@ function taskRowEl(task) {
   const canPause = ACTIVE_TASK_STATES.indexOf(task.state) >= 0;
   return frag([
     el('div', { class: 'task__head' }, [
+      el('input',{type:'checkbox',class:'task-select','aria-label':'选择任务 '+(task.name || task.id),checked:selectedTasks.has(task.id),on:{change:e=>{if(e.target.checked)selectedTasks.add(task.id);else selectedTasks.delete(task.id);paintTaskSelection();}}}),
       el('h3', { class: 'task__name', title: task.name || task.id, text: task.name || task.id }),
       el('span', { class: classNames('chip', 'chip--' + state.kind), text: state.label }),
     ]),
@@ -2032,8 +2027,10 @@ function paintTasks() {
   const stale = list.querySelector('.notice');
   if (stale) stale.remove();
 
+  const visible=filterTasks(taskState.items,taskFilters);
+  const visibleIds=new Set(visible.map(task=>task.id));for(const id of selectedTasks)if(!visibleIds.has(id))selectedTasks.delete(id);
   const seen = new Set();
-  taskState.items.forEach(function (task, index) {
+  visible.forEach(function (task, index) {
     seen.add(task.id);
     let node = taskNodes.get(task.id);
     if (!node) {
@@ -2070,9 +2067,10 @@ function paintTasks() {
     if (!seen.has(id)) { node.remove(); taskNodes.delete(id); }
   });
 
-  if (!taskState.items.length) {
-    fill(list, emptyEl('还没有下载任务。点右上角「导入任务」粘贴磁力链接或选择种子文件。'));
+  if (!visible.length) {
+    fill(list, emptyEl(taskState.items.length?'没有符合筛选的任务。':'还没有下载任务。点右上角「导入任务」粘贴磁力链接或选择种子文件。'));
   }
+  paintTaskSelection();
 }
 
 async function viewTasks(ctx) {
@@ -2089,6 +2087,7 @@ async function viewTasks(ctx) {
     ]),
     el('p', { id: 'live-note', class: 'live-note', hidden: true }),
     el('div', { id: 'task-stats', class: 'stats' }),
+    taskTools(),
     el('div', { class:'list-heading' }, [el('h2', { text:'全部任务' }), el('span', { id:'task-refresh-result', role:'status', text:'自动同步进度' })]),
     el('div', { id: 'task-list', class: 'task-list' }),
   ]));
@@ -2110,7 +2109,7 @@ async function viewTasks(ctx) {
 
   currentActions.refresh = async function (button) {
     const note=$('#task-refresh-result'); button.disabled=true; if (note) note.textContent='正在同步…';
-    try { applyTasks(await api('/tasks')); if (note) note.textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+    try { applyTasks(await api('/tasks')); if (note) note.textContent='已同步 · '+shanghaiTime(); }
     catch (error) { if (note) note.textContent=error.message; }
     finally { if (button.isConnected) button.disabled=false; }
   };
@@ -2120,6 +2119,24 @@ async function viewTasks(ctx) {
   currentActions['task-resume'] = function (button) { changeTask(button, 'resume'); };
   currentActions['task-delete'] = function (button) { deleteTask(button.getAttribute('data-id')); };
 }
+
+function taskTools() {
+  return el('section',{class:'management-tools','aria-label':'任务筛选与批量操作'},[
+    el('div',{class:'management-filters'},[
+      el('input',{type:'search',placeholder:'搜索下载任务…','aria-label':'搜索任务',value:taskFilters.q,on:{input:e=>{taskFilters.q=e.target.value;paintTasks();}}}),
+      selectControl('任务状态',[['all','全部状态'],['downloading','正在下载'],['active','进行中与做种'],['paused','已暂停'],['completed','已完成'],['error','出错']],taskFilters.status,value=>{taskFilters.status=value;paintTasks();}),
+      selectControl('任务排序',[['added','最近添加'],['name','按名称'],['progress','按进度'],['speed','按速度']],taskFilters.sort,value=>{taskFilters.sort=value;paintTasks();}),
+    ]),
+    el('div',{class:'management-batch'},[
+      buttonEl({class:'btn btn--sm',on:{click:()=>{filterTasks(taskState.items,taskFilters).forEach(task=>selectedTasks.add(task.id));paintTaskSelection();}}},null,'全选当前结果'),
+      buttonEl({class:'btn btn--sm btn--ghost',on:{click:()=>{selectedTasks.clear();paintTaskSelection();}}},null,'清空'),
+      el('span',{id:'task-selection',class:'field__hint',role:'status',text:'已选 0 项'}),
+      ...[['pause','暂停所选'],['resume','继续所选']].map(([action,label])=>buttonEl({class:'btn btn--sm','data-task-batch':action,disabled:true,on:{click:()=>runTaskBatch(action)}},action==='pause'?'pause':'play',label)),
+    ]),
+  ]);
+}
+function paintTaskSelection(){const note=$('#task-selection');if(note)note.textContent='已选 '+selectedTasks.size+' 项';$$('[data-task-batch]').forEach(button=>button.disabled=taskBatchBusy||!selectedTasks.size||selectedTasks.size>50);taskNodes.forEach((node,id)=>{const checkbox=node.querySelector('.task-select');if(checkbox)checkbox.checked=selectedTasks.has(id);});}
+async function runTaskBatch(action){if(taskBatchBusy||!selectedTasks.size)return;taskBatchBusy=true;paintTaskSelection();try{const result=await api('/tasks/batch',{method:'POST',body:{action,ids:[...selectedTasks]}});applyTasks(result);batchResults('批量下载操作结果',result.results || []);}catch(error){toast(error.message,'error');}finally{taskBatchBusy=false;paintTaskSelection();}}
 
 function taskFeedback(id, text, error) {
   const row = taskNodes.get(id); if (!row?.isConnected) return;
@@ -2174,6 +2191,9 @@ async function deleteTask(id) {
 /* ---------- 视图：订阅 ---------- */
 
 let subscriptionItems = [];
+const selectedSubscriptions=new Set();
+const subFilters={q:'',status:'all',sort:'next'};
+let subscriptionBatchBusy=false;
 
 /* 订阅页只列「自己订阅了什么」，按电影与剧集分档；每天更新哪些在「更新日历」页。 */
 let subscribeTab = 'auto';
@@ -2208,6 +2228,7 @@ async function viewSubscribe(ctx) {
       ]),
     ]),
     el('div', { class: 'sub-tabs', id: 'sub-tabs' }),
+    subscriptionTools(),
     el('p',{class:'subscription-sync',id:'subscription-sync',role:'status',text:'每 3 秒同步订阅状态'}),
     el('div', { class: 'sub-list', id: 'sub-list' }, skeletonRowsEl(3)),
   ]));
@@ -2258,6 +2279,7 @@ async function viewSubscribe(ctx) {
     const item = itemOf(button);
     if (item) openSubMenu(item, { currentTarget: button });
   };
+  currentActions['sub-episodes'] = function(button){openEpisodeManager(button.dataset.id);};
   currentActions['sub-activity'] = function(button){openSubscriptionActivity(button.dataset.id);};
   currentActions['sub-import'] = function () { fileInput.click(); };
   currentActions['sub-upgrade'] = async function (button) {
@@ -2494,7 +2516,7 @@ async function loadCalendar(force) {
 async function viewCalendar(ctx) {
   calendarMonth = calendarMonth || thisMonth();
   fill(ctx.host, pageEl([
-    el('header', { class: 'page__head cal-page-head' }, [el('div', {}, [el('span', { class: 'eyebrow', text: 'YOUR WATCHLIST, DAY BY DAY' }), el('h1', { text: '追剧日历' }), el('p', { class: 'page__sub', text: '把期待排进日程。订阅剧集的播出安排与下载进度，一眼掌握。' })]),
+    el('header', { class: 'page__head cal-page-head' }, [el('div', {}, [el('span', { class: 'eyebrow', text: 'YOUR WATCHLIST, DAY BY DAY' }), el('h1', { text: '追剧日历' }), el('p', { class: 'page__sub', text: '订阅播出安排与下载进度 · 上海时间（UTC+8）' })]),
       el('a', { class: 'btn', href: '#/subscribe', 'aria-label': '管理订阅' }, [iconNode('bookmark'), el('span', { text: '管理订阅' })]),
     ]),
     el('div', { class: 'cal-summary', id: 'calendar-summary' }),
@@ -2521,6 +2543,79 @@ function moreIconNode() {
     svg.append(dot);
   });
   return svg;
+}
+
+function subscriptionTools() {
+  return el('section',{class:'management-tools','aria-label':'订阅筛选与批量操作'},[
+    el('div',{class:'management-filters'},[
+      el('input',{type:'search',id:'subscription-query',placeholder:'搜索订阅片名…','aria-label':'搜索订阅',value:subFilters.q,on:{input:e=>{subFilters.q=e.target.value;loadSubscriptions(false);}}}),
+      selectControl('订阅状态',[['all','全部状态'],['enabled','已启用'],['paused','已暂停'],['checking','正在检查'],['pending','已提交下载'],['error','异常']],subFilters.status,value=>{subFilters.status=value;loadSubscriptions(false);}),
+      selectControl('订阅排序',[['next','按下次检查'],['created','按添加时间'],['title','按片名']],subFilters.sort,value=>{subFilters.sort=value;loadSubscriptions(false);}),
+    ]),
+    el('div',{class:'management-batch'},[
+      buttonEl({class:'btn btn--sm',on:{click:()=>{$$('#sub-list .sub-card').forEach(card=>selectedSubscriptions.add(card.dataset.id));paintSubscriptionSelection();}}},null,'全选当前结果'),
+      buttonEl({class:'btn btn--sm btn--ghost',on:{click:()=>{selectedSubscriptions.clear();paintSubscriptionSelection();}}},null,'清空'),
+      el('span',{class:'field__hint',id:'subscription-selection',role:'status',text:'已选 0 项'}),
+      ...[['check','检查'],['pause','暂停'],['enable','启用'],['auto-on','开启自动下载'],['auto-off','关闭自动下载']].map(([action,label])=>buttonEl({class:'btn btn--sm','data-sub-batch':action,disabled:true,on:{click:e=>runSubscriptionBatch(action,e.currentTarget)}},null,label)),
+    ]),
+    el('p',{class:'field__hint',text:'批量操作只作用于当前筛选内选中的订阅，每次最多 50 项。'}),
+  ]);
+}
+function paintSubscriptionSelection() {
+  const note=$('#subscription-selection');if(note)note.textContent='已选 '+selectedSubscriptions.size+' 项';
+  $('#subscription-selection')?.closest('.management-tools').classList.toggle('is-selecting',selectedSubscriptions.size>0);
+  $$('[data-sub-batch]').forEach(button=>button.disabled=subscriptionBatchBusy || selectedSubscriptions.size===0 || selectedSubscriptions.size>50);
+  $$('#sub-list .sub-card').forEach(card=>{const checkbox=card.querySelector('.sub-card__select input');if(checkbox)checkbox.checked=selectedSubscriptions.has(card.dataset.id);});
+}
+async function runSubscriptionBatch(action,button) {
+  if(subscriptionBatchBusy || !selectedSubscriptions.size)return;
+  if(action==='auto-on' && !await confirmDialog({title:'开启自动下载',message:'选中的订阅将在后续检查匹配到资源时自动提交到 qBittorrent。确认开启？',confirmText:'开启'}))return;
+  subscriptionBatchBusy=true;paintSubscriptionSelection();
+  try {const result=await api('/subscriptions/batch',{method:'POST',body:{action,ids:[...selectedSubscriptions]}});await loadSubscriptions(true);batchResults('批量订阅操作结果',result.results || []);}
+  catch(error){toast(error.message,'error');}
+  finally{subscriptionBatchBusy=false;paintSubscriptionSelection();}
+}
+async function openEpisodeManager(id) {
+  const item=subscriptionItems.find(item=>item.id===id);if(!item)return;
+  closeSubMenu();
+  const host=el('div',{class:'episode-manager'},loadingEl('正在读取分集信息…'));
+  openModal({title:item.title+' · 逐集管理',size:'lg',body:host});
+  let data,season=item.seasons?.[0] || '',status='all',page=1,version=0;const selected=new Set();
+  async function load(){const own=++version;fill(host,loadingEl('正在读取分集信息…'));try{const response=await api('/subscriptions/'+encodeURIComponent(id)+'/episodes'+(season?'?season='+season:''));if(!host.isConnected||own!==version)return;data=response;season=data.season;selected.clear();page=1;paint();}catch(error){if(host.isConnected)fill(host,errorEl(error.message));}}
+  async function mark(downloaded,button){button.disabled=true;const note=host.querySelector('.episode-feedback');note.textContent='正在保存记录…';try{await api('/subscriptions/'+encodeURIComponent(id)+'/episodes',{method:'PATCH',body:{keys:[...selected],downloaded}});dropStash('calendar');await loadSubscriptions(true);await load();}catch(error){if(note.isConnected)note.textContent=error.message;}finally{if(button.isConnected)button.disabled=false;}}
+  function paint(){
+    const scroll=host.parentElement?.scrollTop || 0;
+    const focused=host.contains(document.activeElement)?document.activeElement.getAttribute('aria-label'):null;
+    const episodes=data.episodes.filter(ep=>status==='all'||ep.status===status),pages=Math.max(1,Math.ceil(episodes.length/50));page=Math.min(page,pages);
+    const visible=episodes.slice((page-1)*50,page*50);
+    const states={downloaded:'已下载',downloading:'已提交',missing:'待补',upcoming:'未播出',unknown:'日期未知'};
+    fill(host,[
+      el('p',{class:'notice',text:'手动标记仅调整订阅记录，不扫描或修改文件。标记已下载会跳过自动下载；恢复待补后，后续检查可能重新下载。进行中的任务请到下载页操作。'}),
+      el('div',{class:'management-filters'},[
+        selectControl('选择季',data.seasons.map(s=>[String(s.seasonNumber),s.name || '第 '+s.seasonNumber+' 季']),String(season),value=>{season=value;load();}),
+        selectControl('集数状态',[['all','全部集数'],...Object.entries(states)],status,value=>{status=value;page=1;selected.clear();paint();}),
+      ]),
+      el('div',{class:'management-batch'},[
+        buttonEl({class:'btn btn--sm',on:{click:()=>{visible.filter(ep=>ep.status!=='downloading').forEach(ep=>selected.add(ep.key));paint();}}},null,'全选本页'),
+        buttonEl({class:'btn btn--sm btn--ghost',on:{click:()=>{selected.clear();paint();}}},null,'清空'),
+        el('span',{class:'field__hint',text:'已选 '+selected.size+' 集'}),
+        buttonEl({class:'btn btn--sm',disabled:!selected.size,on:{click:e=>mark(true,e.currentTarget)}},'check','标记已下载'),
+        buttonEl({class:'btn btn--sm',disabled:!selected.size,on:{click:e=>mark(false,e.currentTarget)}},'refresh','恢复待补'),
+      ]),
+      el('p',{class:'episode-feedback field__hint',role:'status',text:'第 '+page+' / '+pages+' 页，共 '+episodes.length+' 集 · 上海时间'}),
+      el('div',{class:'episode-list'},visible.map(ep=>el('label',{class:'episode-row'},[
+        el('input',{type:'checkbox',checked:selected.has(ep.key),disabled:ep.status==='downloading','aria-label':'选择 '+ep.key,on:{change:e=>{if(e.target.checked)selected.add(ep.key);else selected.delete(ep.key);paint();}}}),
+        el('div',{},[el('strong',{text:ep.key+(ep.name?' · '+ep.name:'')}),el('small',{text:(ep.airDate || '播出日期未知')+(!ep.inScope?' · 不在订阅规则范围':'')})]),
+        chipEl(states[ep.status],ep.status==='downloaded'?'ok':'info'),
+        ep.task?el('span',{class:'field__hint',text:Math.round(ep.task.progress*100)+'%'}):null,
+      ]))),
+      !episodes.length?emptyEl('没有符合条件的集数'):null,
+      el('div',{class:'management-batch'},[buttonEl({class:'btn btn--sm',disabled:page<=1,on:{click:()=>{page--;selected.clear();paint();}}},'back','上一页'),buttonEl({class:'btn btn--sm',disabled:page>=pages,on:{click:()=>{page++;selected.clear();paint();}}},null,'下一页')]),
+    ]);
+    if(host.parentElement)host.parentElement.scrollTop=scroll;
+    if(focused)[...host.querySelectorAll('[aria-label]')].find(node=>node.getAttribute('aria-label')===focused)?.focus({preventScroll:true});
+  }
+  await load();
 }
 
 function subscriptionStatus(item) {
@@ -2575,9 +2670,11 @@ function subCardEl(item) {
       el('p',{class:'sub-card__activity',title:item.lastMessage || '',text:item.lastMessage || '等待首次检查'}),
       el('div',{class:'sub-card__activity-actions'},[
         buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-activity','data-id':item.id},'activity','记录'),
+        type==='tv'?buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-episodes','data-id':item.id},null,'逐集'):null,
         buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-check','data-id':item.id,disabled:item.isChecking || item.enabled===false},'search',item.isChecking?'进行中':'检查'),
       ]),
     ]),
+    el('label',{class:'sub-card__select',title:'选择订阅'},el('input',{type:'checkbox','aria-label':'选择 '+(item.title || '订阅'),checked:selectedSubscriptions.has(item.id),on:{change:e=>{if(e.target.checked)selectedSubscriptions.add(item.id);else selectedSubscriptions.delete(item.id);paintSubscriptionSelection();}}})),
     more,
   ]);
 }
@@ -2731,12 +2828,15 @@ async function loadSubscriptions(force) {
     fill(list, emptyEl('还没有订阅。打开任意影视详情页，点「订阅」即可创建。'));
     return;
   }
-  const wanted = active === 'movie' ? movies : shows;
+  const wanted = filterSubscriptions(active === 'movie' ? movies : shows,subFilters);
+  const visibleIds=new Set(wanted.map(item=>item.id));for(const id of selectedSubscriptions)if(!visibleIds.has(id))selectedSubscriptions.delete(id);
+  paintSubscriptionSelection();
   if (!wanted.length) {
-    fill(list, emptyEl(active === 'movie' ? '还没有订阅电影。' : '还没有订阅剧集。'));
+    fill(list, emptyEl(subFilters.q || subFilters.status!=='all' ? '没有符合筛选的订阅。' : active === 'movie' ? '还没有订阅电影。' : '还没有订阅剧集。'));
     return;
   }
   fill(list, wanted.map(subCardEl));
+  paintSubscriptionSelection();
   if (active === 'tv') updateSubscriptionAirDates(list);
 }
 
@@ -2751,7 +2851,10 @@ async function refreshSubscriptionActivity() {
     if(!list.isConnected || parseRoute().name!=='subscribe')return;
     subscriptionItems=items;
     const oldById=new Map(previous.map(item=>[item.id,item]));
-    if(previous.length!==items.length || previous.some(item=>!items.some(next=>next.id===item.id))) {await loadSubscriptions(true);return;}
+    const active=subscribeTab || (items.some(item=>item.type==='movie')?'movie':'tv');
+    const wanted=filterSubscriptions(items.filter(item=>active==='movie'?item.type==='movie':item.type!=='movie'),subFilters);
+    const shown=[...list.querySelectorAll('.sub-card')].map(card=>card.dataset.id);
+    if(JSON.stringify(shown)!==JSON.stringify(wanted.map(item=>item.id))) {await loadSubscriptions(true);}
     list.querySelectorAll('.sub-card').forEach(card=>{
       const item=items.find(item=>item.id===card.dataset.id);if(!item)return;
       if(JSON.stringify(item)===JSON.stringify(oldById.get(item.id)))return;
@@ -2763,7 +2866,7 @@ async function refreshSubscriptionActivity() {
     if(items.some(item=>item.type!=='movie'))await updateSubscriptionAirDates(list);
     const detail=document.querySelector('[data-subscription-activity]');
     if(detail){const item=items.find(item=>item.id===detail.dataset.subscriptionActivity);if(item){const scroll=detail.parentElement.scrollTop;fill(detail,subscriptionActivityBody(item));detail.parentElement.scrollTop=scroll;}}
-    const sync=$('#subscription-sync');if(sync)sync.textContent='已同步 '+new Date().toLocaleTimeString('zh-CN',{hour12:false})+' · 每 3 秒刷新';
+    const sync=$('#subscription-sync');if(sync)sync.textContent='已同步 '+shanghaiTime()+' · 上海时间 · 每 3 秒刷新';
   }catch(error){const sync=$('#subscription-sync');if(sync)sync.textContent='状态同步失败：'+error.message+'，将自动重试';}
   finally{subscriptionPollBusy=false;}
 }
@@ -2797,6 +2900,36 @@ function qualitySelectEl(name, value) {
 }
 
 /** 表单里一行「标签 + 控件」。 */
+function selectControl(label,entries,value,onChange) {
+  const control=el('select',{'aria-label':label,on:{change:e=>onChange(e.target.value)}},entries.map(([id,text])=>el('option',{value:id,selected:id===value,text})));
+  return control;
+}
+function batchResults(title,results) {
+  openModal({title,body:el('div',{class:'batch-results'},[
+    el('p',{role:'status',text:'成功 '+results.filter(r=>r.ok).length+' / '+results.length+' 项'}),
+    el('ul',{},results.map(result=>el('li',{},[chipEl(result.ok?'完成':'未完成',result.ok?'ok':'err'),el('span',{text:result.message || result.id})]))),
+  ])});
+}
+function subscriptionRulesFields(item={}) {
+  return el('details',{class:'settings-advanced subscription-rules'},[
+    el('summary',{text:'独立追更与资源规则'}),
+    el('p',{class:'field__hint',text:'关键词按字面匹配，不使用正则；包含词须全部命中，排除词命中任意一个即跳过。集号范围对每个订阅季生效。'}),
+    el('div',{class:'form-grid'},[
+      fieldEl('必须包含（逗号分隔）',inputEl('text',{name:'includeKeywords',value:(item.includeKeywords || []).join(', '),placeholder:'例如 WEB-DL, CHS',maxlength:'1600'})),
+      fieldEl('排除关键词（逗号分隔）',inputEl('text',{name:'excludeKeywords',value:(item.excludeKeywords || []).join(', '),placeholder:'例如 CAM, 抢先版',maxlength:'1600'})),
+      fieldEl('视频编码',el('select',{name:'codec'},[['any','不限'],['h264','H.264 / AVC'],['h265','H.265 / HEVC'],['av1','AV1']].map(([value,text])=>el('option',{value,text,selected:value===(item.codec || 'any')})))),
+      fieldEl('最小体积（GB）',inputEl('number',{name:'minSizeGB',min:'0',max:'500',step:'0.1',value:item.minSizeGB || 0})),
+      fieldEl('独立检查间隔（分钟，0 跟随全局）',inputEl('number',{name:'checkIntervalMinutes',min:'0',max:'1440',step:'1',value:item.checkIntervalMinutes || 0})),
+      item.type!=='movie' ? fieldEl('从第几集开始',inputEl('number',{name:'startEpisode',min:'1',max:'9999',value:item.startEpisode || 1})) : null,
+      item.type!=='movie' ? fieldEl('到第几集结束（0 不限）',inputEl('number',{name:'endEpisode',min:'0',max:'9999',value:item.endEpisode || 0})) : null,
+    ]),
+    switchEl(inputEl('checkbox',{name:'strictQuality',checked:item.strictQuality}),'严格画质：没有目标画质时等待，不自动降档'),
+  ]);
+}
+function readSubscriptionRules(form) {
+  return {includeKeywords:form.elements.includeKeywords.value,excludeKeywords:form.elements.excludeKeywords.value,codec:form.elements.codec.value,minSizeGB:Number(form.elements.minSizeGB.value),checkIntervalMinutes:Number(form.elements.checkIntervalMinutes.value),startEpisode:Number(form.elements.startEpisode?.value || 1),endEpisode:Number(form.elements.endEpisode?.value || 0),strictQuality:form.elements.strictQuality.checked};
+}
+
 function fieldEl(label, control) {
   return el('label', { class: 'field' }, [
     el('span', { class: 'field__label', text: label }),
@@ -2830,6 +2963,7 @@ function openSubscriptionEditor(id) {
         }))
         : null,
     ]),
+    subscriptionRulesFields(item),
     switchEl(el('input', { type: 'checkbox', name: 'autoDownload', checked: item.autoDownload ? true : null }),
       '发现资源后自动下载'),
     switchEl(el('input', { type: 'checkbox', name: 'enabled', checked: item.enabled ? true : null }), '启用订阅'),
@@ -2847,6 +2981,7 @@ function openSubscriptionEditor(id) {
       form.addEventListener('submit', async function (event) {
         event.preventDefault();
         const body = {
+          ...readSubscriptionRules(form),
           qualityPreference: form.elements.qualityPreference.value,
           minSeeders: Number(form.elements.minSeeders.value) || 0,
           maxSizeGB: Number(form.elements.maxSizeGB.value) || 0,
@@ -2915,6 +3050,7 @@ function openSubscribeDialog(detail, options) {
       ]),
     ]),
     seasonPicker,
+    subscriptionRulesFields({type:isTv?'tv':'movie'}),
     el('div', { class: 'modal__foot' }, [
       buttonEl({ class: 'btn', 'data-close': true }, null, '取消'),
       buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '确认订阅'),
@@ -2934,6 +3070,7 @@ function openSubscribeDialog(detail, options) {
           picked = Array.prototype.map.call(boxes, function (box) { return Number(box.value); });
         }
         const body = {
+          ...readSubscriptionRules(form),
           type: isTv ? 'tv' : 'movie',
           tmdbId: Number(detail.id),
           // 带上片名信息：后端搜索要用原名，中文名只作回退
@@ -2961,6 +3098,43 @@ function openSubscribeDialog(detail, options) {
     }
   });
 }
+
+/* ---------- Automation overview and persistent in-app notifications ---------- */
+async function viewOverview(ctx) {
+  fill(ctx.host,pageEl(loadingEl('正在读取运行总览…')));
+  const data=await api('/overview');
+  const readiness=data.readiness || {},subs=data.subscriptions || {},tasks=data.tasks || {},capacity=data.capacity || {};
+  fill(ctx.host,pageEl([
+    el('header',{class:'page__head'},[el('div',{},[el('h1',{text:'运行总览'}),el('p',{class:'page__sub',text:'订阅调度、下载、空间与最近通知 · 上海时间（UTC+8）'})]),el('div',{class:'page__actions'},[linkEl({class:'btn',href:'#/notifications'},'bell','通知中心'),buttonEl({class:'btn',on:{click:render}},'refresh','刷新')])]),
+    el('div',{class:'stats'},[['启用订阅',subs.enabled || 0],['检查中与排队',subs.checking || 0],['异常订阅',subs.errors || 0],['下载速率',fmtRate(tasks.rateDown)],['磁盘可用',capacity.known?fmtBytes(capacity.freeBytes):'未知']].map(([label,value])=>el('div',{class:'stat'},[el('span',{class:'stat__value',text:value}),el('span',{class:'stat__label',text:label})]))),
+    el('div',{class:'overview-grid'},[
+      el('section',{class:'panel'},[el('h2',{class:'panel__title',text:'自动化准备情况'}),el('div',{class:'overview-readiness'},[
+        ['TMDB 密钥',readiness.tmdbKeySet?'已配置':'未配置'],['下载器配置',readiness.qbConfigured?'已配置':'未配置'],['qB 当前连接',data.engine?.ready?'就绪':data.engine?.lastError || '未就绪'],['新订阅默认自动下载',readiness.autoDownload?'开启':'关闭'],['默认检查间隔',(readiness.checkIntervalMinutes || 60)+' 分钟'],['自动整理',data.organizer?.autoOrganize?'开启':'关闭']
+      ].map(([label,value])=>kvRowEl(label,value))),linkEl({class:'btn btn--sm',href:'#/settings'},'settings','调整设置')]),
+      el('section',{class:'panel'},[el('h2',{class:'panel__title',text:'接下来的订阅检查'}),el('div',{class:'overview-queue'},(data.queue || []).length?data.queue.map(item=>el('div',{},[el('strong',{text:item.title}),chipEl(subscriptionStatus(item).label,subscriptionStatus(item).kind),el('time',{text:item.isChecking?'当前检查正在处理':fmtDateTime(item.nextCheckAt)})])):emptyEl('还没有启用的订阅')),linkEl({class:'btn btn--sm',href:'#/subscribe'},'bookmark','管理订阅')]),
+    ]),
+    el('section',{class:'panel'},[el('div',{class:'panel__head'},[el('h2',{class:'panel__title',text:'最近通知'}),linkEl({class:'btn btn--sm',href:'#/notifications'},null,'查看全部')]),notificationList(data.notifications || [])]),
+    el('p',{class:'field__hint',text:'配置已填写不代表连接成功；qB 就绪来自下载器轮询。上海时间 '+fmtDateTime(data.at)}),
+  ]));
+}
+function notificationList(items){return items.length?el('div',{class:'notification-list'},items.map(item=>el('article',{class:classNames('notification-item',!item.read&&'is-unread')},[
+  iconNode(item.kind==='error'?'alert':item.kind==='success'?'check':'info'),
+  el('div',{},[el('strong',{text:item.title}),el('p',{text:item.message}),el('time',{datetime:item.at,text:fmtDateTime(item.at)+' · 上海时间'})]),
+  !item.read?buttonEl({class:'btn btn--sm btn--ghost','aria-label':'标记已读 '+item.title,on:{click:async e=>{const button=e.currentTarget;button.disabled=true;try{await api('/notifications/read',{method:'POST',body:{ids:[item.id]}});refreshNotificationBadge();if(parseRoute().name==='notifications')render();else button.closest('.notification-item').classList.remove('is-unread');}catch(error){button.disabled=false;toast(error.message,'error');}}}},'check','已读'):null,
+]))):emptyEl('暂无通知。订阅提交、下载完成或遇到问题时会记录在这里。');}
+let notificationFilter='all',notificationBusy=false;
+async function viewNotifications(ctx){
+  fill(ctx.host,pageEl(loadingEl('正在读取通知…')));const data=await api('/notifications');
+  const wanted=data.items.filter(item=>notificationFilter==='unread'?!item.read:notificationFilter==='error'?item.kind==='error':true);
+  fill(ctx.host,pageEl([
+    el('header',{class:'page__head'},[el('div',{},[el('h1',{text:'通知中心'}),el('p',{class:'page__sub',text:'订阅提交、下载完成与异常提醒 · 保留最近 300 条 · 上海时间'})]),el('div',{class:'page__actions'},[linkEl({class:'btn',href:'#/overview'},'activity','运行总览'),buttonEl({class:'btn',disabled:!data.unread,on:{click:async e=>{const button=e.currentTarget;button.disabled=true;try{await api('/notifications/read',{method:'POST',body:{}});refreshNotificationBadge();render();}catch(error){button.disabled=false;toast(error.message,'error');}}}},'check','全部已读')])]),
+    el('div',{class:'management-filters'},[selectControl('通知筛选',[['all','全部通知'],['unread','未读'],['error','异常提醒']],notificationFilter,value=>{notificationFilter=value;render();}),el('span',{class:'field__hint',role:'status',text:data.unread+' 条未读'})]),
+    el('section',{class:'panel'},notificationList(wanted)),
+  ]));
+  refreshNotificationBadge();
+}
+async function refreshNotificationBadge(){if(!accessReady||document.hidden||notificationBusy)return;notificationBusy=true;try{const data=await api('/notifications?summary=1');const node=$('#notification-badge');if(node){node.textContent=data.unread>99?'99+':String(data.unread || '');node.hidden=!data.unread;}$('#notifications-link')?.setAttribute('aria-label','通知中心，'+data.unread+' 条未读');}catch{/* Keep the app usable when the notification endpoint is temporarily unavailable. */}finally{notificationBusy=false;}}
+setInterval(refreshNotificationBadge,15000);
 
 /* ---------- 视图：设置 ---------- */
 
@@ -3214,7 +3388,7 @@ function settingsFormEl(settings, highlightKey) {
       el('span', { class: 'save-state', id: 'save-state', role: 'status', text: '所有更改已保存' }),
       buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '保存设置'),
       buttonEl({ class: 'btn', 'data-action': 'reload' }, null, '重新载入'),
-      linkEl({ class: 'btn btn--ghost', href: '#/health' }, 'activity', '运行状况'),
+      linkEl({ class: 'btn btn--ghost', href: '#/overview' }, 'activity', '运行总览'),
       el('p', { class: 'notice notice--muted', id: 'settings-message', hidden: true }),
     ]),
   ]);
@@ -3265,7 +3439,7 @@ async function refreshLogs(force) {
   const pre=$('#logs');
   if(logBusy || !accessReady || !pre || (!force && (document.hidden || !$('#logs-auto')?.checked || !document.querySelector('.settings-group[data-section="diag"].is-active'))))return;
   logBusy=true;
-  try {const text=await apiText('/logs?lines=1000');if(!pre.isConnected)return;logText=text;paintLogs();const hint=$('#logs-feedback');if(hint)hint.textContent='已同步 '+new Date().toLocaleTimeString('zh-CN',{hour12:false})+' · 最近 1000 行 · /data/logs 保留文件记录';}
+  try {const text=await apiText('/logs?lines=1000');if(!pre.isConnected)return;logText=text;paintLogs();const hint=$('#logs-feedback');if(hint)hint.textContent='已同步 '+shanghaiTime()+' · 上海时间 · 最近 1000 行 · /data/logs 保留文件记录';}
   catch(error){const hint=$('#logs-feedback');if(hint)hint.textContent='日志同步失败：'+error.message+'，可刷新重试';}
   finally{logBusy=false;}
 }
@@ -3926,6 +4100,7 @@ function openModal(options) {
     ]),
     el('div', { class: 'modal__body' }, options.body || null),
   ]);
+  panel.addEventListener('invalid',event=>{const details=event.target.closest('details');if(details)details.open=true;},true);
   root.replaceChildren(
     el('div', { class: 'modal__backdrop', 'data-close': true }),
     panel,
@@ -4175,6 +4350,7 @@ async function startApp() {
   render();
   settingsCache = appState.settings || null;
   if (appState.settings) startLive();
+  refreshNotificationBadge();
   if (openFile) {
     openImportDialog(openFile);
     toast('已打开导入对话框，确认后即可开始下载', 'ok');
@@ -4265,6 +4441,8 @@ function showLogin() {
 }
 
 const VIEWS = {
+  overview:viewOverview,
+  notifications:viewNotifications,
   home: viewHome,
   search: viewSearch,
   detail: viewDetail,

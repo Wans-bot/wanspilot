@@ -255,3 +255,37 @@ test('account login rejects wrong credentials, invalidates old sessions and pres
     auth.initAuth(process.env.WP_DATA_DIR);
   }
 });
+
+test('subscription batch reports partial failure and episode records validate real TMDB keys',async()=>{
+ initSubs();const current=item();current.enabled=false;subs.importPayload([current]);
+ const created=subs.listSubscriptions().items.find(i=>i.tmdbId===current.tmdbId);assert.ok(created);
+ const result=subs.batchSubscriptions({action:'pause',ids:[created.id,'does-not-exist']});
+ assert.deepEqual(result.results.map(r=>r.ok),[true,false]);
+ const episodes=await subs.subscriptionEpisodes(created.id,1);assert.equal(episodes.episodes[0].key,'S01E01');
+ await assert.rejects(subs.subscriptionEpisodes(created.id,99),e=>e.statusCode===400);
+ await assert.rejects(subs.markSubscriptionEpisodes(created.id,{keys:['S01E99'],downloaded:true}),e=>e.statusCode===400);
+ const marked=await subs.markSubscriptionEpisodes(created.id,{keys:['S01E01'],downloaded:true});assert.ok(marked.item.downloadedKeys.includes('S01E01'));
+ const restored=await subs.markSubscriptionEpisodes(created.id,{keys:['S01E01'],downloaded:false});assert.ok(!restored.item.downloadedKeys.includes('S01E01'));
+ const before=restored.item.minSizeGB;
+ assert.throws(()=>subs.updateSubscription(created.id,{minSizeGB:40,maxSizeGB:2}),e=>e.statusCode===400);assert.equal(subs.listSubscriptions().items.find(i=>i.id===created.id).minSizeGB,before);
+});
+
+test('episode record edits reject active checks and pending tasks',async()=>{
+ const dir=path.join(root,'episode-lock');fs.mkdirSync(dir,{recursive:true});
+ const current=item();current.pendingTasks={S01E01:hash};
+ fs.writeFileSync(path.join(dir,'subscriptions.json'),JSON.stringify({items:[current]}));
+ subs.initSubscriptions(dir,dependencies());
+ await assert.rejects(subs.markSubscriptionEpisodes(current.id,{keys:['S01E01'],downloaded:true}),e=>e.statusCode===409);
+ const checking=item();subs.shutdownSubscriptions();fs.writeFileSync(path.join(dir,'subscriptions.json'),JSON.stringify({items:[checking]}));
+ let release;const gate=new Promise(resolve=>release=resolve);
+ subs.initSubscriptions(dir,dependencies({detail:async()=>{return {title:'Example',seasons:[{seasonNumber:1}]};},searchResources:async()=>{await gate;return {items:[]};}}));
+ const work=subs.runCheck(checking);const edit=subs.markSubscriptionEpisodes(checking.id,{keys:['S01E01'],downloaded:true});
+ // Allow metadata lookup to finish while the actual search remains active.
+ await assert.rejects(edit,e=>e.statusCode===409);release();await work;subs.shutdownSubscriptions();
+});
+
+test('subscription check queue limits parallel searches to two',async()=>{
+ let active=0,peak=0;initSubs({detail:async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,25));active--;return {title:'Example',releaseDate:'2020-01-01'};}});
+ const items=Array.from({length:5},()=>item('movie'));
+ await Promise.all(items.map(i=>subs.runCheck(i)));assert.equal(peak,2);
+});

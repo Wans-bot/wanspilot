@@ -1,7 +1,6 @@
+import { shanghaiDate } from './time.js';
 /* Pure calendar presentation helpers: no DOM, network or browser globals. */
-export function localDateKey(date = new Date()) {
-  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
-}
+export function localDateKey(date = new Date()) { return shanghaiDate(date); }
 export function validMonthKey(value) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value || '')); }
 export function weekdayOf(date) { return (new Date(date + 'T00:00:00Z').getUTCDay() + 6) % 7; }
 export function calendarCells(monthKey, days) {

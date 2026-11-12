@@ -1,3 +1,4 @@
+import { episodeInScope } from './subscription-rules.mjs';
 /** Subscription air-date calendar. TMDB supplies dates, not guaranteed airtimes. */
 import * as tmdb from './tmdb.mjs';
 import { listSubscriptions } from './subscriptions.mjs';
@@ -61,7 +62,7 @@ export function createCalendarService({ getSubscriptions = listSubscriptions, se
           const seen = new Set();
           for (const episode of episodes) {
             const airDate = String(episode.airDate || '');
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(airDate) || !Number.isInteger(episode.episodeNumber) || episode.episodeNumber < 1) continue;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(airDate) || !Number.isInteger(episode.episodeNumber) || episode.episodeNumber < 1 || !episodeInScope(sub,seasonNumber,episode.episodeNumber)) continue;
             const parsedDate = new Date(airDate + 'T00:00:00Z');
             if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== airDate) continue;
             const episodeKey = epKey(seasonNumber, episode.episodeNumber);

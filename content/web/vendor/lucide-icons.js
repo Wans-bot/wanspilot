@@ -4,6 +4,7 @@
  * 许可原文见同目录 LICENSE-lucide.txt。
  */
 export const LUCIDE_ICONS = {
+  'bell': '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
   'user': '<circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
   'lock': '<rect x="4" y="10" width="16" height="12" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4m-4 5v2"/>',
   'key': '<circle cx="8" cy="15" r="5"/><path d="m12 11 9-9m-3 3 3 3m-6 0 3 3"/>',

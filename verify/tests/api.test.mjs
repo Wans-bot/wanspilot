@@ -106,3 +106,14 @@ test('logout clears cookie and bearer access is supported for automation', async
   assert.equal((await request('/api/settings')).status, 401);
   assert.equal((await request('/api/settings', { headers: { authorization: 'Bearer ' + token } })).status, 200);
 });
+
+test('automation endpoints protect secrets and reject unsupported destructive batch operations',async()=>{
+ const login=await request('/api/auth/login',{method:'POST',body:{token}});cookie=login.headers.get('set-cookie').split(';')[0];
+ for(const route of ['/api/overview','/api/notifications']){const res=await request(route);assert.equal(res.status,200);assert.ok(!(await res.text()).includes('private-test'));}
+ const summary=await (await request('/api/notifications?summary=1')).json();assert.deepEqual(Object.keys(summary),['unread']);
+ assert.equal((await request('/api/notifications/read',{method:'POST',body:{}})).status,200);
+ for(const route of ['/api/tasks/batch','/api/subscriptions/batch']){
+  assert.equal((await request(route,{method:'POST',body:{ids:['missing'],action:'delete'}})).status,400);
+  assert.equal((await request(route,{method:'POST',headers:{origin:'https://evil.example'},body:{ids:['missing'],action:'pause'}})).status,403);
+ }
+});

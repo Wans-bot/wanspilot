@@ -1,3 +1,4 @@
+import { selectedIds } from './subscription-rules.mjs';
 /**
  * 下载层：把任务交给用户自己的 qBittorrent，wanspilot 只做影视墙 + 订阅 + 整理。
  *
@@ -316,6 +317,23 @@ export function pauseTask(id) {
 
 export function resumeTask(id) {
   return mutate(id, (item) => ({ ...item, state: 'downloading' }), (hash) => qb.resume(hash));
+}
+
+/** Apply only non-destructive operations to explicit task IDs, with partial failures. */
+export async function batchTasks(input) {
+  const ids=selectedIds(input.ids),action=String(input.action || '');
+  if(!['pause','resume'].includes(action))throw Object.assign(new Error('批量任务仅支持暂停或继续'),{statusCode:400});
+  const results=[];
+  for(const id of ids) {
+    try {
+      const item=getTask(id);if(!item)throw new Error('任务不存在');
+      if(action==='pause' && item.state==='paused' || action==='resume' && ['downloading','seeding','queued','fetching-metadata'].includes(item.state)){results.push({id,ok:true,message:'任务已处于目标状态'});continue;}
+      if(action==='resume' && Number(item.progress)>=1)throw new Error('已完成任务无需恢复下载');
+      await (action==='pause'?pauseTask(id):resumeTask(id));results.push({id,ok:true,message:action==='pause'?'已暂停':'已继续'});
+    }catch(err){results.push({id,ok:false,message:err.message});}
+  }
+  log.info('[engine] 批量 '+action+'：'+results.filter(result=>result.ok).length+'/'+results.length+' 成功');
+  return {results,...listTasks()};
 }
 
 /** 删除任务；deleteFiles 为真时同时删除 qB 那边磁盘上的文件。 */
