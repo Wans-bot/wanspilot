@@ -473,3 +473,5 @@ html[data-theme='light'] .cal-nav__date input[type='month'] { color-scheme: ligh
 .management-filters select { width: auto; flex: 0 1 180px; }
 .management-tools:not(.is-selecting) [data-sub-batch] { display: none; }
 @media(max-width:860px) { .management-filters select { flex: 1 1 120px; } }
+.feature__controls{display:flex;align-items:center;gap:12px}.feature__control{display:inline-flex;align-items:center;gap:5px;min-height:36px;padding:5px 6px;background:transparent;border:0;border-radius:5px;color:#d2d6de;font-size:11px;cursor:pointer}.feature__control .icon{width:13px;height:13px}.feature__control:hover{color:#fff;background:#ffffff14}.feature__control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:860px){.feature__controls{gap:4px}.feature__control{font-size:10px;min-height:44px;padding-inline:4px}.feature__bottom{gap:6px}}

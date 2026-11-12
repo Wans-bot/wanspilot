@@ -1,3 +1,4 @@
+import { selectFeatured } from './featured-model.js';
 import { filterTasks, filterSubscriptions } from './automation-model.js';
 import { shanghaiDate, shanghaiTime, shanghaiDateTime } from './time.js';
 /* WansPilot 前端入口。
@@ -833,9 +834,25 @@ function homeSkeletonEl() {
 }
 
 let featuredIndex = 0;
+let featuredBlocks=[],featuredItems=[],featuredDay='',featuredBatch=0,featuredChangedAt=0;
+let featuredPaused=false;
+function refreshFeaturedBatch(){
+ featuredBatch++;featuredIndex=0;featuredDay=shanghaiDate();
+ featuredItems=selectFeatured(featuredBlocks,{date:featuredDay,batch:featuredBatch});
+ const hero=document.querySelector('.feature');if(hero)hero.replaceWith(featuredEl(featuredItems));
+ document.querySelector('[data-feature-refresh]')?.focus({preventScroll:true});
+}
+setInterval(()=>{
+ const hero=document.querySelector('.feature');
+ if(!hero||document.hidden||featuredPaused||matchMedia('(prefers-reduced-motion: reduce)').matches||hero.matches(':hover')||hero.contains(document.activeElement))return;
+ if(shanghaiDate()!==featuredDay){featuredDay=shanghaiDate();featuredBatch=0;featuredIndex=0;featuredItems=selectFeatured(featuredBlocks,{date:featuredDay});}
+ else {if(featuredItems.length<2||Date.now()-featuredChangedAt<8000)return;featuredIndex=(featuredIndex+1)%featuredItems.length;}
+ hero.replaceWith(featuredEl(featuredItems));
+},1000);
 
 function featuredEl(items) {
   if (!items.length) return null;
+  featuredChangedAt=Date.now();
   const item = items[featuredIndex % items.length];
   const type = normalizeType(item.type);
   const href = '#/detail/' + type + '/' + item.id;
@@ -859,11 +876,11 @@ function featuredEl(items) {
       ]),
     ]),
     el('div', { class: 'feature__bottom' }, [
-      el('span', { class: 'feature__caption', text: '为下一场好戏，留一点时间。' }),
+      el('div',{class:'feature__controls'},[buttonEl({class:'feature__control','data-feature-refresh':true,on:{click:refreshFeaturedBatch}},'refresh','换一批'),buttonEl({class:'feature__control','data-feature-pause':true,'aria-label':featuredPaused?'继续自动轮播':'暂停自动轮播','aria-pressed':String(featuredPaused),on:{click:e=>{featuredPaused=!featuredPaused;const button=e.currentTarget;button.setAttribute('aria-pressed',String(featuredPaused));button.setAttribute('aria-label',featuredPaused?'继续自动轮播':'暂停自动轮播');button.textContent=featuredPaused?'继续轮播':'暂停轮播';}}},null,featuredPaused?'继续轮播':'暂停轮播')]),
       el('div', { class: 'feature__dots', role: 'group', 'aria-label': '切换精选作品' }, items.map(function (film, index) {
         return el('button', { type: 'button', class: classNames('feature__dot', featuredIndex % items.length === index && 'is-active'),
           'aria-label': '精选 ' + (index + 1) + '：' + film.title, 'aria-pressed': featuredIndex % items.length === index ? 'true' : 'false',
-          on: { click: function () { featuredIndex = index; const hero = document.querySelector('.feature'); if (hero) hero.replaceWith(featuredEl(items)); } },
+          on: { click: function () { featuredIndex = index; const hero = document.querySelector('.feature'); if(hero){const focused=hero.contains(document.activeElement);hero.replaceWith(featuredEl(items));if(focused)document.querySelector('.feature__dot.is-active')?.focus({preventScroll:true});} } },
         });
       })),
     ]),
@@ -873,14 +890,11 @@ function featuredEl(items) {
 function homeBlocksEl(data) {
   const blocks = data && Array.isArray(data.blocks) ? data.blocks : [];
   if (!blocks.length) return pageEl(emptyEl('影视墙暂时没有内容。请先在设置里填写 TMDB API Key。'));
-  const featured = [];
-  const seen = new Set();
-  blocks.forEach(function (block) {
-    const item = (block.items || []).find(function (film) { return film.backdropPath && !seen.has(film.type + ':' + film.id); });
-    if (item && featured.length < 5) { featured.push(item); seen.add(item.type + ':' + item.id); }
-  });
+  featuredBlocks=blocks;
+  const day=shanghaiDate();if(featuredDay!==day){featuredDay=day;featuredBatch=0;featuredIndex=0;}
+  featuredItems=selectFeatured(blocks,{date:featuredDay,batch:featuredBatch});
   const page = pageEl([
-    featuredEl(featured),
+    featuredEl(featuredItems),
     el('div', { class: 'discovery-bar' }, [
       el('nav', { class: 'discovery-links', 'aria-label': '快速探索' }, [
         linkEl({ href: '#/search?type=movie&category=popular' }, 'film', '热门电影'),
@@ -2556,7 +2570,7 @@ function subscriptionTools() {
       buttonEl({class:'btn btn--sm',on:{click:()=>{$$('#sub-list .sub-card').forEach(card=>selectedSubscriptions.add(card.dataset.id));paintSubscriptionSelection();}}},null,'全选当前结果'),
       buttonEl({class:'btn btn--sm btn--ghost',on:{click:()=>{selectedSubscriptions.clear();paintSubscriptionSelection();}}},null,'清空'),
       el('span',{class:'field__hint',id:'subscription-selection',role:'status',text:'已选 0 项'}),
-      ...[['check','检查'],['pause','暂停'],['enable','启用'],['auto-on','开启自动下载'],['auto-off','关闭自动下载']].map(([action,label])=>buttonEl({class:'btn btn--sm','data-sub-batch':action,disabled:true,on:{click:e=>runSubscriptionBatch(action,e.currentTarget)}},null,label)),
+      ...[['check','检查'],['pause','暂停'],['enable','启用'],['auto-on','开启并检查'],['auto-off','关闭自动下载']].map(([action,label])=>buttonEl({class:'btn btn--sm','data-sub-batch':action,disabled:true,on:{click:e=>runSubscriptionBatch(action,e.currentTarget)}},null,label)),
     ]),
     el('p',{class:'field__hint',text:'批量操作只作用于当前筛选内选中的订阅，每次最多 50 项。'}),
   ]);
@@ -2569,7 +2583,7 @@ function paintSubscriptionSelection() {
 }
 async function runSubscriptionBatch(action,button) {
   if(subscriptionBatchBusy || !selectedSubscriptions.size)return;
-  if(action==='auto-on' && !await confirmDialog({title:'开启自动下载',message:'选中的订阅将在后续检查匹配到资源时自动提交到 qBittorrent。确认开启？',confirmText:'开启'}))return;
+  if(action==='auto-on' && !await confirmDialog({title:'开启自动下载',message:'选中的已启用订阅将立即安排检查，匹配到资源后自动提交到 qBittorrent；暂停中的订阅保持暂停。确认开启？',confirmText:'开启'}))return;
   subscriptionBatchBusy=true;paintSubscriptionSelection();
   try {const result=await api('/subscriptions/batch',{method:'POST',body:{action,ids:[...selectedSubscriptions]}});await loadSubscriptions(true);batchResults('批量订阅操作结果',result.results || []);}
   catch(error){toast(error.message,'error');}

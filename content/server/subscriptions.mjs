@@ -198,6 +198,7 @@ function normalizeSeasons(value) {
 export function updateSubscription(id, patch) {
   const item = findItem(id);
   if (!item) return null;
+  const wasEnabled=item.enabled!==false,wasAutomatic=item.autoDownload!==false;
   const rules=normalizeRules(patch,item);
   if(rules.minSizeGB>clamp(patch.maxSizeGB ?? item.maxSizeGB,1,500,item.maxSizeGB))throw Object.assign(new Error('最小体积不能大于最大体积'),{statusCode:400});
   Object.assign(item,rules);
@@ -224,6 +225,7 @@ export function updateSubscription(id, patch) {
     if (!item.downloadedKeys.length && item.state === 'idle') item.state = 'watching';
   }
   activity(item, item.enabled === false ? 'paused' : 'updated', '订阅设置已更新' + ('enabled' in patch ? (item.enabled ? '，已启用' : '，已暂停') : ''));
+  if(item.enabled!==false && ((patch.enabled===true&&!wasEnabled)||(patch.autoDownload===true&&!wasAutomatic)))queueCheck(id);
   return { item: decorate(item) };
 }
 
@@ -378,6 +380,9 @@ async function searchForTitle(item, params, localizedTitle, want, extraFilter, o
       if (res.sources?.length && failed.length===res.sources.length) throw new Error('全部索引源不可用：'+failed.map(source=>source.name || source.id).join('、'));
       activity(item,'searching','搜索 '+scope+' 返回 '+res.items.length+' 条候选'+(failed.length?'，'+failed.length+' 个源不可用':''));
       if (run) run.cache.set(key,res);
+      const named=res.items.filter(candidate=>titleMatches(candidate.title,titles));
+      const scoped=extraFilter?named.filter(extraFilter):named;
+      activity(item,'searching','资源诊断：片名匹配 '+named.length+' 条，季集匹配 '+scoped.length+' 条'+(!named.length?'；当前索引源未找到该作品资源，不会提交无关影视':'') );
     }
     checked += res.items.length;
     const pool = extraFilter ? res.items.filter(extraFilter) : res.items;
@@ -650,7 +655,9 @@ export function batchSubscriptions(input) {
       const item=findItem(id);if(!item)throw new Error('订阅不存在');
       if(action==='check'){const result=queueCheck(id);return {id,ok:result.ran,message:result.message};}
       const patch=action==='pause'?{enabled:false}:action==='enable'?{enabled:true}:{autoDownload:action==='auto-on'};
-      updateSubscription(id,patch);return {id,ok:true,message:'已更新'};
+      updateSubscription(id,patch);
+      if(action==='auto-on' && item.enabled!==false){const queued=queueCheck(id);return {id,ok:true,message:'已开启自动下载；'+queued.message};}
+      return {id,ok:true,message:action==='auto-on'?'已开启自动下载，订阅仍暂停，启用后开始检查':'已更新'};
     }catch(err){return {id,ok:false,message:err.message};}
   });
   log.info('[subs] 批量 '+action+'：'+results.filter(r=>r.ok).length+'/'+results.length+' 成功');

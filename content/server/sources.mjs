@@ -343,6 +343,12 @@ const REGISTRY = [
   { id: 'nyaa', name: 'Nyaa', run: searchNyaa, needsProxy: true },
 ];
 
+export function matchesQueryTitle(title,query) {
+ const keywords=String(query || '').normalize('NFKC').toLowerCase().split(/[\s:：\-]+/).filter(word=>word.length>=2).slice(0,3);
+ const normalized=String(title || '').normalize('NFKC').toLowerCase();
+ return !keywords.length || keywords.some(word=>normalized.includes(word));
+}
+
 function buildQueries(context) {
   const raw = String(context.q || '').trim();
   if (!raw) return [];
@@ -368,6 +374,20 @@ export function activeSources() {
   return REGISTRY.filter((s) => !s.needsProxy || proxy);
 }
 
+const queryCache=new Map(),queryPending=new Map(),sourceCooldown=new Map();
+/** Reuse raw queries across seasons/episodes and back off after source throttling. */
+export async function querySource(source,q,context={}) {
+ const key=JSON.stringify([source.id,q,context.type || 'movie',getSettings().proxy || '']);
+ const cached=queryCache.get(key);if(cached&&Date.now()<cached.until)return cached.items.map(item=>({...item}));
+ if(queryPending.has(key))return (await queryPending.get(key)).map(item=>({...item}));
+ if(Date.now()<(sourceCooldown.get(source.id)||0))throw new Error('索引源请求过多（HTTP 429），冷却中，请稍后重试');
+ const work=Promise.resolve().then(()=>source.run(q,context)).then(items=>{
+  if(queryCache.size>=240)queryCache.delete(queryCache.keys().next().value);
+  queryCache.set(key,{items,until:Date.now()+(items.length?SEARCH_CACHE_TTL_MS:60000)});return items;
+ }).catch(error=>{if(/HTTP 429/.test(error.message))sourceCooldown.set(source.id,Date.now()+60000);throw error;}).finally(()=>queryPending.delete(key));
+ queryPending.set(key,work);return (await work).map(item=>({...item}));
+}
+
 /** 查一个源的全部查询词，把结果与报告写进传入的两个数组。 */
 async function runSource(source, runQueries, context, collected, sourceReports) {
   const sourceStarted = Date.now();
@@ -375,7 +395,7 @@ async function runSource(source, runQueries, context, collected, sourceReports) 
   let error = '';
   for (const q of runQueries) {
     try {
-      const batch = await source.run(q, context);
+      const batch = await querySource(source,q,context);
       collected.push(...batch);
       count += batch.length;
     } catch (err) {
@@ -459,17 +479,7 @@ export async function searchResources(context) {
 
   let items = [...byHash.values()];
   // 上下文相关性粗筛：标题里必须出现关键词首词，避免站点把无关内容一起返回
-  const keywords = String(context.q || '')
-    .toLowerCase()
-    .split(/[\s:：\-]+/)
-    .filter((w) => w.length >= 2)
-    .slice(0, 3);
-  if (keywords.length) {
-    items = items.filter((it) => {
-      const t = it.title.toLowerCase();
-      return keywords.some((k) => t.includes(k)) || it.seeders > 200;
-    });
-  }
+  items=items.filter(item=>matchesQueryTitle(item.title,context.q));
 
   for (const item of items) item.score = scoreItem(item, context);
   items.sort((a, b) => b.score - a.score || b.seeders - a.seeders);

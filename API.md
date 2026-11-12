@@ -434,3 +434,7 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 - `PATCH /api/subscriptions/:id/episodes`：`{keys:["S01E01"],downloaded:true}`；单季最多 50 集，校验 TMDB 实际集号；检查进行中或已有下载任务时返回 409。仅调整记录，恢复待补可能触发下轮自动补集。
 
 订阅创建、更新与导入新增字段：includeKeywords/excludeKeywords（数组或逗号/换行分隔文本，每组最多 20 个、每个 80 字符，按字面匹配），codec（any/h264/h265/av1），minSizeGB（0–500，不超过 maxSizeGB），strictQuality（布尔），startEpisode（1–9999），endEpisode（0 不限，否则不小于 startEpisode），checkIntervalMinutes（0 继承全局，或 5–1440）。集号范围应用于每个订阅季，非全季范围不使用整季包。
+
+### 1.4.1 行为补充
+
+`auto-on` 批量操作除开启自动下载外，还对已启用订阅立即排队检查（正在检查时复用同一次工作）；暂停订阅只更新开关并明确提示仍暂停。单个订阅 PATCH 从暂停转为启用，或从关闭自动下载转为开启时，同样立即安排检查。日志接口保留上海时间，以不带时区后缀的 `YYYY-MM-DD HH:mm:ss` 展示；内部时间和订阅导出仍保留明确时区。

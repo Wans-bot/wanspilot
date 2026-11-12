@@ -27,3 +27,13 @@ test('business operation audit covers all mutations and manual searches without 
   auditOperation(req,res,new URL('http://localhost/api/auth/login?token=never-log-this'));res.emit('finish');
   assert.match(tail(),/登录 失败/);assert.ok(!tail().includes('never-log-this'));
 });
+
+test('logs show Shanghai wall time without timezone suffix and normalize historical offset lines',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wp-log-time-'));
+ try{fs.mkdirSync(path.join(dir,'logs'));fs.writeFileSync(path.join(dir,'logs/wanspilot.log'),'2026-11-12T19:05:44+08:00 [INFO] historical\n');
+ initLog(dir);log.info('new-format');
+ const text=tail();assert.match(text,/2026-11-12 19:05:44 \[INFO\] historical/);assert.ok(!text.includes('+08:00'));
+ assert.match(text,/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[INFO\] new-format/);
+ assert.ok(fs.readFileSync(path.join(dir,'logs/wanspilot.log'),'utf8').includes('2026-11-12T19:05:44+08:00'));
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

@@ -53,7 +53,7 @@ export function initLog(dataDir) {
 }
 
 function write(level, args) {
-  const time = shanghaiTimestamp();
+  const time = shanghaiTimestamp().replace('T', ' ').replace(/\+08:00$/, '');
   const text = redact(args.map(a => { if(typeof a==='string') return a;if(a instanceof Error)return a.message;try{return JSON.stringify(a);}catch{return String(a);} }).join(' '));
   const line = `${time} [${level}] ${text}`;
 
@@ -87,5 +87,5 @@ export const log = {
 /** 返回最近 n 行日志，供 GET /api/logs 使用。 */
 export function tail(count = 200) {
   const n = Math.min(Math.max(1, Number(count) || 200), MAX_MEMORY_LINES);
-  return lines.slice(-n).join('\n');
+  return lines.slice(-n).map(line => line.replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})\+08:00(?= \[)/, '$1 $2')).join('\n');
 }

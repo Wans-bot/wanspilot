@@ -44,3 +44,10 @@ test('notifications deduplicate, persist reads, and bound history to 300',()=>{
  assert.equal(listNotifications().items.length,300);readNotifications(null);assert.equal(listNotifications().unread,0);flushNotifications();
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('unrelated high-seeder resources cannot bypass query relevance',async()=>{
+ const {matchesQueryTitle}=await import('../../content/server/sources.mjs');
+ assert.equal(matchesQueryTitle('Its.Always.Sunny.in.Philadelphia.S01','无上神帝'),false);
+ assert.equal(matchesQueryTitle('无上神帝.第001集.1080p','无上神帝'),true);
+ assert.equal(matchesQueryTitle('ＥＸＡＭＰＬＥ.S01E01','Example'),true);
+});

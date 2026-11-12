@@ -289,3 +289,26 @@ test('subscription check queue limits parallel searches to two',async()=>{
  const items=Array.from({length:5},()=>item('movie'));
  await Promise.all(items.map(i=>subs.runCheck(i)));assert.equal(peak,2);
 });
+
+test('enabling automatic download schedules a check immediately, paused subscriptions remain paused',async()=>{
+ initSubs({searchResources:async()=>({items:[]})});
+ const current=subs.listSubscriptions().items[0];assert.ok(current);
+ subs.batchSubscriptions({action:'pause',ids:[current.id]});
+ const paused=subs.batchSubscriptions({action:'auto-on',ids:[current.id]});assert.match(paused.results[0].message,/仍暂停/);
+ assert.equal(subs.listSubscriptions().items.find(i=>i.id===current.id).isChecking,false);
+ subs.updateSubscription(current.id,{autoDownload:false});
+ subs.updateSubscription(current.id,{enabled:true,autoDownload:true});
+ assert.equal(subs.listSubscriptions().items.find(i=>i.id===current.id).isChecking,true);
+ await subs.checkNow(current.id);
+ const repeated=subs.batchSubscriptions({action:'auto-on',ids:[current.id]});assert.match(repeated.results[0].message,/已开启自动下载/);
+ assert.equal(subs.listSubscriptions().items.find(i=>i.id===current.id).isChecking,true);await subs.checkNow(current.id);
+});
+
+test('source raw queries coalesce, cache across episodes and back off after 429',async()=>{
+ const {querySource}=await import('../../content/server/sources.mjs');let calls=0;
+ const source={id:'test-cache',run:async()=>{calls++;await new Promise(r=>setTimeout(r,10));return [{title:'Example',score:0}];}};
+ const [a,b]=await Promise.all([querySource(source,'Example',{type:'tv',episode:1}),querySource(source,'Example',{type:'tv',episode:2})]);assert.equal(calls,1);
+ a[0].score=999;assert.equal(b[0].score,0);await querySource(source,'Example',{type:'tv',episode:3});assert.equal(calls,1);
+ let failures=0;const throttled={id:'test-429',run:async()=>{failures++;throw new Error('HTTP 429');}};
+ await assert.rejects(querySource(throttled,'a'),/429/);await assert.rejects(querySource(throttled,'b'),/冷却/);assert.equal(failures,1);
+});
