@@ -315,6 +315,9 @@ try {
   await page.click('[data-action="organize-preview"]'); await page.waitForSelector('.modal'); record('organizer preview dialog'); await page.click('.modal [data-close]');
   await page.click('#logout-button'); await page.waitForSelector('#access-form'); record('logout returns to access screen');
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true }); await checkLayout(page, 'login mobile');
+  const loginGeometry=await page.$eval('#access-form',n=>{const r=n.getBoundingClientRect(),b=n.querySelector('[type=submit]').getBoundingClientRect(),fields=n.querySelector('.access__fields').getBoundingClientRect();return {center:(r.left+r.right)/2,width:r.width,buttonWidth:b.width,gap:b.top-fields.bottom};});
+  assert.ok(Math.abs(loginGeometry.center-195)<2);assert.ok(loginGeometry.buttonWidth>=loginGeometry.width-2);assert.ok(loginGeometry.gap>=20);
+  record('login centers form and provides full width separated submit',loginGeometry);
   await page.screenshot({ path: path.join(out, 'login-mobile.png') });
   await page.setViewport({ width: 320, height: 740 }); await checkLayout(page, 'login narrow mobile');
   await page.evaluate(() => document.documentElement.dataset.theme = 'light'); await checkLayout(page, 'login light mobile');

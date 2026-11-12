@@ -1,5 +1,5 @@
 {
-  "passed": 61,
+  "passed": 62,
   "fixtures": true,
   "realArtSource": false,
   "checks": [
@@ -275,6 +275,13 @@
       "overflow": false,
       "heading": "WansPilot",
       "mainChildren": 1
+    },
+    {
+      "name": "login centers form and provides full width separated submit",
+      "center": 195,
+      "width": 342,
+      "buttonWidth": 342,
+      "gap": 26
     },
     {
       "name": "login narrow mobile",

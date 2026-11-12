@@ -13,7 +13,7 @@
 - `npm test --prefix content`：53 项通过。
 - `npm run check --prefix content`：通过。
 - `git diff --check`：通过。
-- `WP_MOBILE_MATRIX=1 WP_SCREENSHOTS=/tmp/wp-refine-final node verify/browser-smoke.mjs`：61 项浏览器检查；深浅主题 × 7 个视口 × 13 页面，共 182 组布局检查。
+- `WP_MOBILE_MATRIX=1 WP_SCREENSHOTS=/tmp/wp-refine-final node verify/browser-smoke.mjs`：62 项浏览器检查；深浅主题 × 7 个视口 × 13 页面，共 182 组布局检查。
 - 新增真实浏览器操作：筛选与重置、qB 连接成功/失败、TMDB 与图片源结果独立、任务暂停/继续及可访问进度、手机进度条可见、订阅下载计数去重与已知/未知日期、背景图 srcset 与海报错误占位。
 - 人工检查桌面、手机、浅色主题截图，包括展开的网络设置、搜索、订阅、任务、详情和登录。
 
