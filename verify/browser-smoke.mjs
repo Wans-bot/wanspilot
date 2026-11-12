@@ -27,7 +27,11 @@ const results = [], errors = [];
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const record = (name, details = {}) => { results.push({ name, ...details }); console.log('PASS', name, JSON.stringify(details)); };
 const fallbackHome = { blocks: ['热门电影', '热门剧集', '热门动漫', '高分电影', '高分剧集'].map((title, b) => ({ title, type: b % 2 ? 'tv' : 'movie', id: b < 3 ? 'popular' + b : 'top' + b, items: Array.from({ length: 12 }, (_, i) => ({ id: b * 100 + i + 1, type: b % 2 ? 'tv' : 'movie', title: ['远方来信', '雨夜列车', '深蓝之境', '星光之后'][i % 4], originalTitle: 'Cinema Fixture ' + (i + 1), year: '2026', voteAverage: 8.2, posterPath: '/fixture.jpg', backdropPath: '/fixture-backdrop.jpg', overview: '这是一段用于页面验收的示例简介。测试使用独立数据，不会提交真实下载。' })) })) };
-const home = process.env.WP_HOME_FIXTURE ? JSON.parse(fs.readFileSync(process.env.WP_HOME_FIXTURE)) : fallbackHome;
+let home = fallbackHome;
+if (process.env.WP_HOME_FIXTURE) {
+  try { home = JSON.parse(fs.readFileSync(process.env.WP_HOME_FIXTURE, 'utf8')); }
+  catch (error) { console.error('WP_HOME_FIXTURE 读取失败，改用内置 fixture：', error.message); }
+}
 const cards = home.blocks[0].items;
 const subs = cards.slice(0, 5).map((film, i) => ({ ...film, id: 'fixture-sub-' + i, tmdbId: film.id, state: i === 2 ? 'error' : 'watching', enabled: true, autoDownload: true, downloadedKeys: [], pendingKeys: i === 0 ? ['S01E01'] : [], qualityPreference: '1080p', minSeeders: 5, maxSizeGB: 30, lastMessage: i === 2 ? '连接超时，稍后重试' : '等待更新' }));
 subs[3] = { ...subs[3], id:'calendar-sub-2', type:'tv', downloadedKeys:['S01E01','S01E01'], totalEpisodes:3 };

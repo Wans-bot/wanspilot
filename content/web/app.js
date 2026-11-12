@@ -2594,7 +2594,7 @@ function paintSubscriptionSelection() {
   $$('[data-sub-batch]').forEach(button=>button.disabled=subscriptionBatchBusy || selectedSubscriptions.size===0 || selectedSubscriptions.size>50);
   $$('#sub-list .sub-card').forEach(card=>{const checkbox=card.querySelector('.sub-card__select input');if(checkbox)checkbox.checked=selectedSubscriptions.has(card.dataset.id);});
 }
-async function runSubscriptionBatch(action,button) {
+async function runSubscriptionBatch(action) {
   if(subscriptionBatchBusy || !selectedSubscriptions.size)return;
   if(action==='auto-on' && !await confirmDialog({title:'开启自动下载',message:'选中的已启用订阅将立即安排检查，匹配到资源后自动提交到 qBittorrent；暂停中的订阅保持暂停。确认开启？',confirmText:'开启'}))return;
   subscriptionBatchBusy=true;paintSubscriptionSelection();
