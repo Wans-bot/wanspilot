@@ -7,8 +7,6 @@ services:
       - "3000:3000"
     environment:
       TZ: Asia/Shanghai
-      PUID: "0"
-      PGID: "0"
       WP_USERNAME: "admin"
       WP_PASSWORD: "请改成自己的密码至少8个字符"
     volumes:

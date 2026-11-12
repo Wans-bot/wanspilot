@@ -63,7 +63,16 @@ wanspilot: /downloads        ← 同样挂进来（设置页「本地挂载路�
 
 ## 账号密码登录（绿联 NAS 简化部署）
 
-使用 `compose.nas.yml` 即可直接拉取已发布镜像，无需下载源码。修改 YAML 中 `WP_USERNAME` 和 `WP_PASSWORD`（密码至少 8 个字符），执行 `docker compose -f compose.nas.yml up -d`。这是容器内 root 运行的简化配置，媒体目录按实际情况修改。
+使用 `compose.nas.yml` 即可直接拉取已发布镜像，无需下载源码。修改 YAML 中 `WP_USERNAME` 和 `WP_PASSWORD`（密码至少 8 个字符），执行 `docker compose -f compose.nas.yml up -d`。NAS 固定配置不显式设置 `PUID` / `PGID`，使用镜像默认运行用户；媒体目录按实际情况修改。
+
+后续固定使用 `ghcr.io/wans-bot/wanspilot:latest`。更新时保留原有 YAML、账号密码和数据目录，在部署目录执行：
+
+```bash
+docker compose -f compose.nas.yml pull
+docker compose -f compose.nas.yml up -d
+```
+
+`latest` 在每次成功发布后更新；已有容器不会自动升级，单纯重启也不会拉取新镜像。绿联 Docker 界面中可拉取最新镜像后重新创建容器，继续使用原来的挂载路径。
 
 配置账号密码后，登录页自动显示账号和密码输入框，不再使用令牌登录。只配置其中一项或密码过短会拒绝启动。修改凭据后重新创建容器，旧会话自动失效。未配置账号密码时保留原有令牌模式；账号模式若需自动化 Bearer 访问，另行配置 `WP_ACCESS_TOKEN`。
 
