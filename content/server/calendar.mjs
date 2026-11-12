@@ -1,105 +1,84 @@
-/**
- * 更新日历。
- *
- * 把订阅里的剧集按 TMDB 的播出日期摊到日历上，标出已下载与漏看的集数。
- * 每部剧每季的数据在内存里缓存 6 小时，避免翻月时反复打 TMDB。
- */
+/** Subscription air-date calendar. TMDB supplies dates, not guaranteed airtimes. */
 import * as tmdb from './tmdb.mjs';
 import { listSubscriptions } from './subscriptions.mjs';
 import { log } from './log.mjs';
+import { localDateKey, validMonthKey } from '../web/calendar-model.js';
 
 const CACHE_TTL_MS = 6 * 3600 * 1000;
-const seasonCache = new Map();
+const epKey = (season, episode) => `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
 
-function epKey(season, episode) {
-  return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+export function calendarEpisodeStatus(episodeKey, airDate, today, downloaded, pending) {
+  if (downloaded.has(episodeKey)) return 'downloaded';
+  if (pending.has(episodeKey)) return 'downloading';
+  return airDate > today ? 'upcoming' : 'missing';
 }
 
-async function seasonEpisodes(tmdbId, seasonNumber) {
-  const key = `${tmdbId}:${seasonNumber}`;
-  const hit = seasonCache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.episodes;
-  try {
-    const data = await tmdb.season({ id: tmdbId, season: seasonNumber });
-    const episodes = (data && data.episodes) || [];
-    seasonCache.set(key, { at: Date.now(), episodes });
-    return episodes;
-  } catch (err) {
-    log.warn(`[calendar] 第 ${seasonNumber} 季信息获取失败：${err.message}`);
-    seasonCache.set(key, { at: Date.now(), episodes: [] });
-    return [];
+/** Dependencies keep calendar tests isolated from the NAS and TMDB. */
+export function createCalendarService({ getSubscriptions = listSubscriptions, season = tmdb.season, detail = tmdb.detail, now = () => new Date() } = {}) {
+  const cache = new Map(), inflight = new Map();
+  async function cached(key, fetcher) {
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+    if (inflight.has(key)) return inflight.get(key);
+    const request = Promise.resolve().then(fetcher).then(value => {
+      if (cache.size >= 400) cache.delete(cache.keys().next().value);
+      cache.set(key, { value, at: Date.now() }); return value;
+    }).finally(() => inflight.delete(key));
+    inflight.set(key, request); return request;
   }
-}
-
-const detailCache = new Map();
-
-/** 按订阅里的季号取；没选季的（海报上点订阅 = 追全部季）回落到 TMDB 的季信息。 */
-async function seasonsFor(sub, monthKey) {
-  if (Array.isArray(sub.seasons) && sub.seasons.length) return sub.seasons;
-  const cacheKey = `detail:${sub.tmdbId}`;
-  const hit = detailCache.get(cacheKey);
-  let detail = hit && Date.now() - hit.at < CACHE_TTL_MS ? hit.value : null;
-  if (!detail) {
-    try {
-      detail = await tmdb.detail({ type: 'tv', id: sub.tmdbId });
-      detailCache.set(cacheKey, { at: Date.now(), value: detail });
-    } catch (err) {
-      log.warn(`[calendar] ${sub.title || sub.tmdbId} 季信息获取失败：${err.message}`);
-      detailCache.set(cacheKey, { at: Date.now(), value: null });
-      return [];
-    }
+  async function seasonsFor(sub, monthKey) {
+    if (Array.isArray(sub.seasons) && sub.seasons.length) return [...new Set(sub.seasons.map(Number))].filter(n => Number.isInteger(n) && n > 0);
+    const data = await cached('detail:' + sub.tmdbId, () => detail({ type: 'tv', id: sub.tmdbId }));
+    const all = ((data && data.seasons) || []).filter(item => Number(item.seasonNumber) > 0).sort((a, b) => a.seasonNumber - b.seasonNumber);
+    const started = all.filter(item => !item.airDate || String(item.airDate) <= monthKey + '-31');
+    return (started.length ? started : all).slice(-2).map(item => Number(item.seasonNumber));
   }
-  const all = ((detail && detail.seasons) || []).filter((season) => Number(season.seasonNumber) > 0);
-  // 当月以前开播的最后两季就够覆盖「这个月更新什么」，避免把整部剧的季全拉一遍
-  const started = all.filter((season) => !season.airDate || String(season.airDate) <= monthKey + '-31');
-  const picked = started.length ? started : all;
-  return picked.slice(-2).map((season) => Number(season.seasonNumber));
-}
-
-/**
- * 取某个月的更新：YYYY-MM。
- * @returns {{month: string, days: Array<{date: string, items: Array}>, total: number}}
- */
-export async function month(monthKey) {
-  const key = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : new Date().toISOString().slice(0, 7);
-  const subs = (listSubscriptions().items || []).filter((item) => item.type !== 'movie' && item.enabled !== false);
-  const days = new Map();
-
-  for (const sub of subs) {
-    const seasons = await seasonsFor(sub, key);
-    const downloaded = new Set(sub.downloadedKeys || []);
-    for (const seasonNumber of seasons) {
-      const episodes = await seasonEpisodes(sub.tmdbId, seasonNumber);
-      for (const episode of episodes) {
-        const airDate = String(episode.airDate || '');
-        if (!airDate.startsWith(key)) continue;
-        const episodeKey = epKey(seasonNumber, episode.episodeNumber);
-        const status = downloaded.has(episodeKey) ? 'downloaded' : (sub.pendingKeys?.includes(episodeKey) ? 'downloading' : 'missing');
-        const entry = {
-          subscriptionId: sub.id,
-          tmdbId: sub.tmdbId,
-          type: 'tv',
-          title: sub.title,
-          posterPath: sub.posterPath || '',
-          season: seasonNumber,
-          episode: episode.episodeNumber,
-          episodeName: episode.name || '',
-          airDate,
-          status,
-        };
-        if (!days.has(airDate)) days.set(airDate, []);
-        days.get(airDate).push(entry);
+  return async function month(monthKey) {
+    const today = localDateKey(now());
+    const key = String(monthKey || today.slice(0, 7));
+    if (!validMonthKey(key)) throw Object.assign(new Error('月份格式应为 YYYY-MM，月份范围为 01–12'), { statusCode: 400 });
+    const subs = (getSubscriptions().items || []).filter(item => item.type !== 'movie' && item.enabled !== false);
+    const warnings = [], results = [];
+    let cursor = 0;
+    // Bound concurrent subscriptions; a large watchlist must not flood TMDB.
+    await Promise.all(Array.from({ length: Math.min(4, subs.length) }, async () => {
+      while (cursor < subs.length) {
+        const sub = subs[cursor++];
+        let seasons;
+        try { seasons = await seasonsFor(sub, key); } catch (err) {
+          warnings.push({ subscriptionId: sub.id, title: sub.title, reason: 'season-info-unavailable' });
+          log.warn(`[calendar] ${sub.title || sub.tmdbId} 季信息获取失败：${err.message}`); continue;
+        }
+        const downloaded = new Set(sub.downloadedKeys || []), pending = new Set(sub.pendingKeys || []);
+        for (const seasonNumber of seasons) {
+          let episodes;
+          try {
+            const data = await cached(`${sub.tmdbId}:${seasonNumber}`, () => season({ id: sub.tmdbId, season: seasonNumber }));
+            episodes = data?.episodes || [];
+          } catch (err) {
+            warnings.push({ subscriptionId: sub.id, title: sub.title, season: seasonNumber, reason: 'episodes-unavailable' });
+            log.warn(`[calendar] ${sub.title || sub.tmdbId} 第 ${seasonNumber} 季信息获取失败：${err.message}`); continue;
+          }
+          const seen = new Set();
+          for (const episode of episodes) {
+            const airDate = String(episode.airDate || '');
+            if (!airDate.startsWith(key + '-') || !/^\d{4}-\d{2}-\d{2}$/.test(airDate) || !Number.isInteger(episode.episodeNumber) || episode.episodeNumber < 1) continue;
+            const parsedDate = new Date(airDate + 'T00:00:00Z');
+            if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== airDate) continue;
+            const episodeKey = epKey(seasonNumber, episode.episodeNumber);
+            if (seen.has(episodeKey)) continue; seen.add(episodeKey);
+            results.push({ subscriptionId: sub.id, tmdbId: sub.tmdbId, type: 'tv', title: sub.title, posterPath: sub.posterPath || '', season: seasonNumber, episode: episode.episodeNumber, episodeName: episode.name || '', airDate,
+              status: calendarEpisodeStatus(episodeKey, airDate, today, downloaded, pending) });
+          }
+        }
       }
-    }
-  }
-
-  const ordered = [...days.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, items]) => ({ date, items }));
-  return {
-    month: key,
-    days: ordered,
-    total: ordered.reduce((sum, day) => sum + day.items.length, 0),
-    missing: ordered.reduce((sum, day) => sum + day.items.filter((i) => i.status === 'missing').length, 0),
+    }));
+    const days = new Map();
+    results.sort((a, b) => a.airDate.localeCompare(b.airDate) || String(a.title).localeCompare(String(b.title), 'zh-CN') || a.season - b.season || a.episode - b.episode);
+    for (const item of results) { if (!days.has(item.airDate)) days.set(item.airDate, []); days.get(item.airDate).push(item); }
+    return { month: key, today, days: [...days.entries()].map(([date, items]) => ({ date, items })), total: results.length,
+      missing: results.filter(item => item.status === 'missing').length, upcoming: results.filter(item => item.status === 'upcoming').length,
+      downloading: results.filter(item => item.status === 'downloading').length, downloaded: results.filter(item => item.status === 'downloaded').length, warnings };
   };
 }
+export const month = createCalendarService();

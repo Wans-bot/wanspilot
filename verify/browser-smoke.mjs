@@ -55,11 +55,23 @@ async function install(page) {
       if (url.pathname === '/api/subscriptions' && req.method() === 'GET') return json({ items: subs });
       if (url.pathname === '/api/tasks' && req.method() === 'GET') return json(tasks);
       if (url.pathname === '/api/tasks/events') return req.respond({ status: 200, contentType: 'text/event-stream', body: `data: ${JSON.stringify(tasks)}\n\n` });
-      if (url.pathname === '/api/calendar') { const month = url.searchParams.get('month'); return json({ month, total: 3, missing: 1, days: [{ date: month + '-12', items: ['downloaded', 'downloading', 'missing'].map((state, i) => ({ ...subs[i], subscriptionId: subs[i].id, tmdbId: subs[i].tmdbId, season: 1, episode: i + 1, airDate: month + '-12', status: state })) }] }); }
+      if (url.pathname === '/api/calendar') {
+        const month = url.searchParams.get('month');
+        const item = (id, day, episode, status) => ({ ...subs[id % subs.length], subscriptionId: 'calendar-sub-' + id, tmdbId: cards[id % cards.length].id, title: cards[id % cards.length].title, season: 1, episode, episodeName: '新的旅程 · 第 ' + episode + ' 集', airDate: month + '-' + day, status });
+        const days = [
+          { date: month + '-03', items: [item(0, '03', 1, 'downloaded'), item(1, '03', 1, 'missing')] },
+          { date: month + '-12', items: [item(0, '12', 2, 'downloaded'), item(0, '12', 3, 'missing'), item(1, '12', 2, 'downloading'), ...[2,3,4,5].map(id => item(id, '12', 1, 'missing'))] },
+          { date: month + '-19', items: [item(0, '19', 4, 'upcoming'), item(2, '19', 2, 'upcoming')] },
+          { date: month + '-26', items: [item(0, '26', 5, 'upcoming'), item(1, '26', 3, 'upcoming'), item(3, '26', 2, 'upcoming')] },
+        ];
+        // A delayed old-month response exercises rapid navigation race handling.
+        if (month.endsWith('-10')) await pause(900);
+        return json({ month, today: month + '-12', total: 14, missing: 6, days });
+      }
       if (url.pathname === '/api/health/report') return json({ tmdb: { ok: true, message: '连接正常' }, sources: status.sources, capacity: { freeBytes: 600 * 1024 ** 3, quotaGB: 0, downloadDir: '/downloads' }, tasks: tasks.stats, at: new Date().toISOString() });
       if (url.pathname === '/api/image') {
         if (process.env.WP_IMAGE_SOURCE) {
-          if (!imageCache.has(url.search)) imageCache.set(url.search, fetch(process.env.WP_IMAGE_SOURCE + '/api/image' + url.search, { signal: AbortSignal.timeout(18000) }).then(async res => ({ status: res.status, contentType: res.headers.get('content-type') || 'image/jpeg', body: Buffer.from(await res.arrayBuffer()) })).catch(() => ({ status: 200, contentType: 'image/svg+xml', body: placeholder })));
+          if (!imageCache.has(url.search)) imageCache.set(url.search, fetch(process.env.WP_IMAGE_SOURCE + '/api/image' + url.search, { signal: AbortSignal.timeout(18000) }).then(async res => { if (!res.ok) throw new Error('Artwork unavailable'); return { status: res.status, contentType: res.headers.get('content-type') || 'image/jpeg', body: Buffer.from(await res.arrayBuffer()) }; }).catch(() => ({ status: 200, contentType: 'image/svg+xml', body: placeholder })));
           return req.respond(await imageCache.get(url.search));
         }
         return req.respond({ status: 200, contentType: 'image/svg+xml', body: placeholder });
@@ -84,9 +96,22 @@ try {
   const context = await browser.createBrowserContext();
   const page = await context.newPage(); await page.setViewport({ width: 1440, height: 1000 }); await install(page);
   await page.goto(base, { waitUntil: 'domcontentloaded' }); await page.waitForSelector('#access-form');
+  await page.type('#access-username', 'admin'); await page.type('#access-token', 'incorrect-test-password');
+  await page.click('.access__reveal'); assert.equal(await page.$eval('#access-token', node => node.type), 'text');
+  await page.click('.access__reveal'); assert.equal(await page.$eval('#access-token', node => node.type), 'password'); record('login password visibility');
+  await page.click('#access-form [type=submit]'); await page.waitForFunction(() => document.querySelector('.access__error')?.textContent.includes('账号或密码不正确')); record('login invalid credentials');
+  await page.$eval('#access-token', node => { node.value = ''; });
+  await page.$eval('#access-username', node => { node.value = ''; });
+  await page.evaluate(() => { document.querySelector('.access__error').textContent = ''; });
   await checkLayout(page, 'login desktop'); await page.screenshot({ path: path.join(out, 'login-desktop.png') });
   await page.type('#access-username', 'admin'); await page.type('#access-token', token); await page.click('#access-form [type=submit]'); await page.waitForSelector('.feature');
   await page.waitForFunction(() => document.querySelector('.feature__image')?.naturalWidth > 0, { timeout: 22000 });
+  const logo = await page.$eval('.brand__logo', async node => {
+    await node.decode(); const canvas = document.createElement('canvas'); canvas.width = node.naturalWidth; canvas.height = node.naturalHeight;
+    const context = canvas.getContext('2d'); context.drawImage(node, 0, 0);
+    return { background: getComputedStyle(node).backgroundColor, alpha: context.getImageData(0, 0, 1, 1).data[3] };
+  });
+  assert.equal(logo.background, 'rgba(0, 0, 0, 0)'); assert.equal(logo.alpha, 0); record('logo transparent image and CSS', logo);
   await checkLayout(page, 'home desktop'); await page.screenshot({ path: path.join(out, 'home-desktop.png') });
   await page.click('.feature__dot:nth-child(2)');
   assert.equal(await page.$eval('.feature__dot:nth-child(2)', n => n.getAttribute('aria-pressed')), 'true'); record('featured selection');
@@ -107,6 +132,30 @@ try {
   for (const [name, hash, selector] of routes) {
     await page.evaluate(hash => { location.hash = hash; }, hash); await page.waitForSelector(selector); await checkLayout(page, name + ' desktop'); await page.screenshot({ path: path.join(out, name + '-desktop.png') });
   }
+  await page.evaluate(() => { location.hash = '#/calendar'; }); await page.waitForSelector('.cal__grid');
+  const daySelector = '.cal__cell[data-date$="-12"]';
+  assert.equal(await page.$$eval(daySelector + ' .cal__item', nodes => nodes.length), 3); record('calendar collapses busy dates');
+  await page.click(daySelector + ' .cal__more');
+  assert.equal(await page.$$eval(daySelector + ' .cal__item', nodes => nodes.length), 6); record('calendar expands busy dates');
+  assert.ok((await page.$eval(daySelector, node => node.textContent)).includes('1/2 已完成')); record('calendar same-day episode grouping');
+  await page.click(daySelector + ' .cal__date'); await page.waitForSelector('.cal-day-detail');
+  assert.equal(await page.$$eval('.cal-day-detail__episodes > div', nodes => nodes.length), 7); record('calendar day details');
+  const resourceLink = await page.$eval('.cal-day-detail__group > a.btn', node => node.getAttribute('href'));
+  assert.ok(resourceLink.includes('&season=1&episode=1')); record('calendar resource link preserves season and episode');
+  await pause(250); await page.evaluate(() => document.querySelector('#toasts').replaceChildren()); await page.screenshot({ path: path.join(out, 'calendar-day-detail.png') }); await page.click('.modal [data-close]');
+  await page.select('#calendar-status', 'upcoming');
+  assert.equal(await page.$$eval('.cal-month-view .cal__item', nodes => nodes.length), 5); record('calendar future status filter');
+  await page.select('#calendar-series', 'calendar-sub-0');
+  assert.equal(await page.$$eval('.cal-month-view .cal__item', nodes => nodes.length), 2); record('calendar combined series filter');
+  await page.select('#calendar-status', 'all'); await page.select('#calendar-series', 'all');
+  await page.click('[data-layout="agenda"]'); await checkLayout(page, 'calendar timeline desktop');
+  await page.screenshot({ path: path.join(out, 'calendar-timeline-desktop.png') });
+  await page.click('[data-layout="month"]');
+  await page.$eval('input[type=month]', input => { input.value = '2026-10'; input.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.$eval('input[type=month]', input => { input.value = '2026-11'; input.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForSelector('.cal__grid'); await pause(1100);
+  assert.equal(await page.$eval('.cal__cell[data-date]', node => node.dataset.date), '2026-11-01'); record('calendar ignores late old-month responses');
+  await page.screenshot({ path: path.join(out, 'calendar-desktop.png'), fullPage: true });
   const mobile = await context.newPage(); await mobile.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true }); await install(mobile);
   await mobile.goto(base + '/#/home', { waitUntil: 'domcontentloaded' }); await mobile.waitForSelector('.feature'); await pause(800);
   await checkLayout(mobile, 'home mobile');
@@ -114,8 +163,19 @@ try {
   assert.ok(navRect.top > 700, 'mobile navigation must stay at viewport bottom'); record('mobile bottom navigation', navRect);
   await mobile.screenshot({ path: path.join(out, 'home-mobile.png') });
   for (const [name, hash, selector] of [...routes, ['settings', '#/settings?tab=qb', '#settings-form']]) {
-    await mobile.evaluate(hash => { location.hash = hash; }, hash); await mobile.waitForSelector(selector); await checkLayout(mobile, name + ' mobile'); await mobile.screenshot({ path: path.join(out, name + '-mobile.png') });
+    await mobile.evaluate(hash => { location.hash = hash; }, hash); await mobile.waitForSelector(selector); await checkLayout(mobile, name + ' mobile'); await mobile.screenshot({ path: path.join(out, name + '-mobile.png'), fullPage: name === 'calendar' });
   }
+  await mobile.evaluate(() => { location.hash = '#/calendar'; }); await mobile.waitForSelector('.cal-agenda');
+  assert.equal(await mobile.$eval('.cal-agenda-view', node => getComputedStyle(node).display), 'block'); record('mobile calendar uses timeline');
+  await mobile.select('#calendar-status', 'upcoming'); await checkLayout(mobile, 'calendar mobile filtered');
+  assert.equal(await mobile.$$eval('.cal-agenda .cal__item', nodes => nodes.length), 5);
+  await mobile.select('#calendar-status', 'all');
+  await mobile.$eval('.cal-agenda', node => node.scrollIntoView({ block: 'start' })); await pause(180);
+  await mobile.screenshot({ path: path.join(out, 'calendar-timeline-mobile.png') });
+  await mobile.evaluate(() => scrollTo(0, 0));
+  await mobile.click('[data-action="theme-toggle"]'); await checkLayout(mobile, 'calendar mobile light');
+  await mobile.screenshot({ path: path.join(out, 'calendar-light-mobile.png'), fullPage: true });
+  await mobile.click('[data-action="theme-toggle"]');
   await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');
   assert.equal(await mobile.$eval('html', n => n.dataset.theme), 'light'); await mobile.screenshot({ path: path.join(out, 'home-light-mobile.png') });
   await page.bringToFront();
@@ -123,6 +183,11 @@ try {
   await page.evaluate(() => { location.hash = '#/settings?tab=files'; }); await page.waitForSelector('[data-action="organize-preview"]');
   await page.click('[data-action="organize-preview"]'); await page.waitForSelector('.modal'); record('organizer preview dialog'); await page.click('.modal [data-close]');
   await page.click('#logout-button'); await page.waitForSelector('#access-form'); record('logout returns to access screen');
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true }); await checkLayout(page, 'login mobile');
+  await page.screenshot({ path: path.join(out, 'login-mobile.png') });
+  await page.setViewport({ width: 320, height: 740 }); await checkLayout(page, 'login narrow mobile');
+  await page.evaluate(() => document.documentElement.dataset.theme = 'light'); await checkLayout(page, 'login light mobile');
+  await page.screenshot({ path: path.join(out, 'login-light-mobile.png') });
   assert.deepEqual(errors, []); record('no browser JavaScript exceptions');
   fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ passed: results.length, fixtures: true, realArtSource: Boolean(process.env.WP_IMAGE_SOURCE), checks: results, errors }, null, 2));
   console.log('Browser acceptance complete:', results.length, 'checks');

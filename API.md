@@ -355,7 +355,9 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 更新日历：`{ "month": "2026-10", "days": [{ "date": "2026-10-08",
 "items": [{ "subscriptionId": "sub_x1", "tmdbId": 106379, "type": "tv", "title": "流人",
 "posterPath": "/x.jpg", "season": 6, "episode": 4, "airDate": "2026-10-08", "status": "downloaded" }] }],
-"total": 5, "missing": 1 }`。`status` 取 `downloaded`（已完成）、`downloading`（下载中）或 `missing`（待补集）。
+"total": 5, "missing": 1 }`。`status` 取 `downloaded`（已完成）、`downloading`（下载中）、`missing`（已到播出日期、待补集）或 `upcoming`（未来未播出）。已完成 / 下载中优先于日期判断。
+
+响应额外包含 `today`（服务端本地日期）、`downloaded`、`downloading`、`upcoming` 计数及 `warnings` 数组；部分 TMDB 失败时返回已获取结果和警告，不冒充完整空日历。非法月份（如 `2026-13`）返回 400。前端按同一订阅、季和日期合并多集展示，接口仍返回逐集记录。
 
 ### `GET /api/health/report`
 运行状况看板：TMDB 连通性、各索引源延迟、磁盘剩余与配额、任务统计。

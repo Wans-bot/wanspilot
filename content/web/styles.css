@@ -104,14 +104,13 @@ pre { margin: 0; font-family: var(--font-mono); }
 }
 
 .brand { display: inline-flex; align-items: center; gap: 9px; }
-/* 顶栏用整幅 logo（图形标记 + 文字标）。设计稿是白底方图，
-   在深色顶栏上保留白底圆角，图内文字标在此尺寸下只作纹理，应用名仍由 .brand__text 承担。 */
+/* 标记本身已有透明通道，保持背景透明，避免深色主题出现白色方块。 */
 .brand__logo {
   display: block;
   width: 34px;
   height: 34px;
   border-radius: 9px;
-  background: #fff;
+  background: transparent;
   object-fit: contain;
 }
 .brand__text {

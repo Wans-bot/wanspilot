@@ -2,6 +2,7 @@
  * 无构建步骤：浏览器把它当 ES 模块直接加载，接口契约见仓库根目录 API.md。
  */
 import { LUCIDE_ICONS } from './vendor/lucide-icons.js';
+import { localDateKey, validMonthKey, weekdayOf, calendarCells, groupCalendarItems, filterCalendarDays, calendarStats } from './calendar-model.js';
 
 const API_ROOT = '/api';
 
@@ -732,7 +733,7 @@ function routeSignature(route) {
 }
 
 /** 哪些页面适合留着：数据型页面留着；任务页有实时推送、设置页要现场自检，都现渲染。 */
-const STASHABLE = new Set(['home', 'search', 'detail', 'subscribe', 'calendar']);
+const STASHABLE = new Set(['home', 'search', 'detail', 'subscribe']);
 
 function stashDisplayed(host) {
   const node = host.firstElementChild;
@@ -2329,184 +2330,179 @@ async function viewSubscribe(ctx) {
 }
 
 let calendarMonth = '';
-
-/* 周一开头，与国内日历习惯一致。 */
+let calendarData = null;
+let calendarLoadId = 0;
+let calendarLayout = 'month';
+let calendarFilter = { status: 'all', series: 'all' };
 const CAL_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
-
-/* 一天最多先列 3 张海报，多出来的折进「还有 N 条」，避免某天把整行撑高。 */
-const CAL_MAX_ITEMS = 3;
-
-function thisMonth() { return new Date().toISOString().slice(0, 7); }
-
-function weekdayOf(date) {
-  return (new Date(date + 'T00:00:00Z').getUTCDay() + 6) % 7;
+const CAL_STATUS = {
+  downloaded: { label: '已完成', kind: 'done' }, downloading: { label: '下载中', kind: 'downloading' },
+  missing: { label: '待补集', kind: 'missing' }, upcoming: { label: '未播出', kind: 'upcoming' },
+  partial: { label: '部分完成', kind: 'partial' },
+};
+function thisMonth() { return localDateKey().slice(0, 7); }
+function calendarStatusEl(item) {
+  const state = CAL_STATUS[item.status] || CAL_STATUS.missing;
+  return el('span', { class: 'cal-status is-' + state.kind, text: item.status === 'partial' ? item.downloaded + '/' + item.count + ' 已完成' : state.label });
 }
-
-/** 把某个月的更新摊成周一到周日排布的方格，首尾补空格。 */
-function calendarCells(monthKey, days) {
-  const parts = monthKey.split('-').map(Number);
-  const daysInMonth = new Date(Date.UTC(parts[0], parts[1], 0)).getUTCDate();
-  const offset = weekdayOf(monthKey + '-01');
-  const byDate = new Map();
-  (days || []).forEach(function (day) { byDate.set(day.date, day.items || []); });
-  const cells = [];
-  for (let i = 0; i < offset; i += 1) cells.push(null);
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    const date = monthKey + '-' + pad2(day);
-    cells.push({ date: date, day: day, items: byDate.get(date) || [] });
-  }
-  while (cells.length % 7 !== 0) cells.push(null);
-  return cells;
-}
-
-function calendarItemEl(item) {
-  const done = item.status === 'downloaded';
-  const label = '第 ' + item.season + ' 季 第 ' + item.episode + ' 集';
-  const type = item.type === 'movie' ? 'movie' : 'tv';
-  // 海报直接放进日期框：海报 + 角标（第几集）+ 剧名，一眼看出今天更新的是哪部
-  const poster = el('span', { class: 'cal__poster' });
-  if (item.posterPath) {
-    poster.append(el('img', {
-      src: imageUrl(item.posterPath, 'w154'), alt: '', loading: 'lazy', decoding: 'async',
-    }));
-  } else {
-    poster.append(iconNode('film'));
-  }
-  poster.append(el('span', {
-    class: 'cal__ep',
-    text: 'S' + pad2(item.season) + 'E' + pad2(item.episode),
-  }));
-  // 片名不再挤在海报下面（会截成「安迪·科…」），改成悬停提示里完整给出
+function calendarItemEl(item, expanded) {
+  const state = CAL_STATUS[item.status] || CAL_STATUS.missing;
+  const poster = el('span', { class: 'cal__poster' }, item.posterPath
+    ? el('img', { src: imageUrl(item.posterPath, 'w154'), alt: '', loading: 'lazy', decoding: 'async' }) : iconNode('film'));
   return el('a', {
-    class: classNames('cal__item', done ? 'is-done' : (item.status === 'downloading' ? 'is-downloading' : 'is-missing')),
-    href: '#/detail/' + type + '/' + (item.tmdbId || ''),
-    title: item.title + ' · ' + label + (item.episodeName ? ' ' + item.episodeName : '')
-      + (done ? ' · 已下载' : (item.status === 'downloading' ? ' · 下载中' : ' · 缺这一集')),
-  }, poster);
+    class: 'cal__item is-' + state.kind,
+    href: '#/detail/' + (item.type === 'movie' ? 'movie' : 'tv') + '/' + item.tmdbId,
+    title: item.title + ' · ' + item.episodeLabel + ' · ' + state.label,
+  }, [poster, el('span', { class: 'cal-event__body' }, [
+    el('strong', { class: 'cal-event__title', text: item.title }),
+    el('span', { class: 'cal-event__episode', text: item.episodeLabel }),
+    expanded && item.count === 1 && item.episodeName ? el('span', { class: 'cal-event__name', text: item.episodeName }) : null,
+    calendarStatusEl(item),
+  ])]);
 }
-
+function openCalendarDay(cell) {
+  const groups = groupCalendarItems(cell.items);
+  openModal({ title: cell.date + ' · 周' + CAL_WEEKDAYS[weekdayOf(cell.date)], size: 'md', body: el('div', { class: 'cal-day-detail' }, [
+    el('p', { class: 'page__sub', text: groups.length + ' 部剧集 · ' + cell.items.length + ' 集更新' }),
+    groups.length ? groups.map(function (group) {
+      return el('section', { class: 'cal-day-detail__group' }, [calendarItemEl(group, true),
+        el('div', { class: 'cal-day-detail__episodes' }, group.entries.map(function (episode) {
+          return el('div', {}, [el('span', { text: 'E' + pad2(episode.episode) + (episode.episodeName ? ' · ' + episode.episodeName : '') }), calendarStatusEl(episode)]);
+        })),
+        el('a', { class: 'btn btn--sm', href: '#/resources/tv/' + group.tmdbId + '?title=' + encodeURIComponent(group.title) + '&season=' + group.season + (group.count === 1 ? '&episode=' + group.entries[0].episode : '') }, [iconNode('search'), '寻找资源',]),
+      ]);
+    }) : emptyEl('这一天暂无符合筛选条件的更新'),
+  ]) });
+  // 跳转详情或资源时收起弹窗，避免遮住新页面。
+  $('#modal-root').querySelectorAll('a').forEach(function (link) { link.addEventListener('click', closeModal); });
+}
 function calendarCellEl(cell, todayKey) {
   if (!cell) return el('div', { class: 'cal__cell cal__cell--blank', 'aria-hidden': 'true' });
-  const hidden = cell.items.length - CAL_MAX_ITEMS;
-  const moreLabel = '还有 ' + hidden + ' 条';
-  return el('div', {
-    class: classNames('cal__cell',
-      cell.date === todayKey && 'is-today',
-      !cell.items.length && 'cal__cell--empty'),
-  }, [
-    el('div', { class: 'cal__date' }, [
+  const groups = groupCalendarItems(cell.items);
+  const list = el('div', { class: 'cal__items' }, groups.slice(0, 3).map(function (group) { return calendarItemEl(group); }));
+  const more = groups.length > 3 ? buttonEl({ class: 'cal__more', 'aria-expanded': 'false', on: { click: function (event) {
+    const open = event.currentTarget.getAttribute('aria-expanded') !== 'true';
+    event.currentTarget.setAttribute('aria-expanded', String(open));
+    event.currentTarget.textContent = open ? '收起' : '+ ' + (groups.length - 3) + ' 部剧集';
+    fill(list, (open ? groups : groups.slice(0, 3)).map(function (group) { return calendarItemEl(group); }));
+  } } }, null, '+ ' + (groups.length - 3) + ' 部剧集') : null;
+  return el('div', { class: classNames('cal__cell', cell.date === todayKey && 'is-today', !groups.length && 'cal__cell--empty'), 'data-date': cell.date }, [
+    el('button', { type: 'button', class: 'cal__date', 'aria-label': cell.date + '，' + cell.items.length + ' 集更新', on: { click: function () { openCalendarDay(cell); } } }, [
       el('span', { class: 'cal__day', text: cell.day }),
-      el('span', { class: 'cal__weekday', text: '周' + CAL_WEEKDAYS[weekdayOf(cell.date)] }),
       cell.date === todayKey ? el('span', { class: 'cal__today', text: '今天' }) : null,
-      cell.items.length ? el('span', { class: 'cal__count', text: cell.items.length }) : null,
-    ]),
-    cell.items.length
-      ? el('div', { class: 'cal__items' }, [
-        cell.items.map(function (item) { return calendarItemEl(item); }),
-        hidden > 0
-          ? buttonEl({
-            class: 'cal__more', 'data-action': 'cal-more', 'data-more': moreLabel,
-          }, null, moreLabel)
-          : null,
-      ])
-      : null,
+      groups.length ? el('span', { class: 'cal__count', text: cell.items.length + ' 集' }) : null,
+    ]), list, more,
   ]);
 }
-
-async function loadCalendar() {
+function calendarAgendaEl(days, todayKey) {
+  return el('div', { class: 'cal-agenda' }, days.map(function (day) {
+    const today = day.date === todayKey;
+    const future = day.date > todayKey;
+    return el('section', { class: classNames('cal-agenda__day', today && 'is-today'), 'data-date': day.date }, [
+      el('header', { class: 'cal-agenda__head' }, [
+        el('div', { class: 'cal-agenda__stamp' }, [el('strong', { text: Number(day.date.slice(-2)) }), el('span', { text: '周' + CAL_WEEKDAYS[weekdayOf(day.date)] })]),
+        el('div', {}, [el('h2', { text: today ? '今天的更新' : (day.date.slice(5).replace('-', '月') + '日') }), el('span', { text: day.items.length + ' 集 · ' + (today ? '今日播出' : future ? '即将播出' : '已到播出日期') })]),
+        buttonEl({ class: 'btn btn--sm', 'aria-label': '查看 ' + day.date + ' 更新详情', on: { click: function () { openCalendarDay(day); } } }, null, '详情'),
+      ]),
+      el('div', { class: 'cal-agenda__events' }, groupCalendarItems(day.items).map(function (group) { return calendarItemEl(group, true); })),
+    ]);
+  }));
+}
+function paintCalendar() {
   const body = $('#calendar-body');
-  const nav = $('#calendar-nav');
-  if (!body || !nav) return;
-  calendarMonth = /^\d{4}-\d{2}$/.test(calendarMonth) ? calendarMonth : thisMonth();
-  const parts = calendarMonth.split('-').map(Number);
-  const prev = new Date(Date.UTC(parts[0], parts[1] - 2, 1)).toISOString().slice(0, 7);
-  const next = new Date(Date.UTC(parts[0], parts[1], 1)).toISOString().slice(0, 7);
-  const atThisMonth = calendarMonth === thisMonth();
-  // 相邻月份写成单独一层 span：手机屏幕窄，只留左右箭头，隐藏这层标签
-  const prevButton = buttonEl({
-    class: 'btn btn--sm', 'data-action': 'cal-prev',
-  }, 'chevron-left');
-  prevButton.append(el('span', { class: 'cal__step' }, prev));
-  const nextButton = buttonEl({
-    class: 'btn btn--sm', 'data-action': 'cal-next',
-  });
-  nextButton.append(el('span', { class: 'cal__step' }, next), iconNode('chevron-right'));
-  const todayButton = buttonEl({
-    class: 'btn btn--sm',
-    'data-action': 'cal-today',
-    disabled: atThisMonth ? true : null,
-  }, null, '今天');
-  const legend = el('span', { class: 'cal__legend' }, [
-    el('i', { class: 'cal__dot is-done' }), '已下载',
-    el('i', { class: 'cal__dot is-downloading' }), '下载中',
-    el('i', { class: 'cal__dot is-missing' }), '缺这一集',
-  ]);
-  fill(nav, [
-    prevButton,
-    el('strong', { class: 'cal__month', text: calendarMonth }),
-    nextButton,
-    todayButton,
-    el('span', { class: 'field__hint', id: 'calendar-count' }),
-    legend,
-  ]);
-
-  let data;
-  try {
-    data = await cachedApi('/calendar?month=' + encodeURIComponent(calendarMonth), 60 * 1000);
-  } catch (error) {
-    fill(body, errorEl(error.message));
-    return;
-  }
-  const days = (data && data.days) || [];
+  if (!body || !calendarData) return;
+  const days = calendarData.days || [];
+  const stats = calendarStats(days);
+  const filtered = filterCalendarDays(days, calendarFilter);
+  const filteredStats = calendarStats(filtered);
+  const today = calendarData.today || localDateKey();
+  const summary = $('#calendar-summary');
+  if (summary) fill(summary, [
+    ['本月更新', stats.total, stats.series + ' 部订阅剧集', 'all'],
+    ['已完成', stats.downloaded, '下载完成的剧集', 'downloaded'],
+    ['待补集', stats.missing, '已到播出日期', 'missing'],
+    ['即将播出', stats.upcoming, '等待新的故事', 'upcoming'],
+  ].map(function (metric) {
+    return el('button', { type: 'button', class: 'cal-metric' + (calendarFilter.status === metric[3] ? ' is-active' : ''), 'aria-pressed': String(calendarFilter.status === metric[3]), on: { click: function () {
+      calendarFilter.status = metric[3]; const select = $('#calendar-status'); if (select) select.value = metric[3]; paintCalendar();
+    } } }, [el('span', { text: metric[0] }), el('strong', { text: metric[1] }), el('small', { text: metric[2] })]);
+  }));
   const count = $('#calendar-count');
-  if (count) count.textContent = '本月 ' + (data.total || 0) + ' 集，缺 ' + (data.missing || 0) + ' 集';
-  const todayKey = new Date().toISOString().slice(0, 10);
+  if (count) count.textContent = filteredStats.series + ' 部剧集 · ' + filteredStats.total + ' 集' + (stats.downloading ? ' · ' + stats.downloading + ' 集下载中' : '');
   fill(body, [
-    el('div', { class: 'cal__weekdays' }, CAL_WEEKDAYS.map(function (name) {
-      return el('span', { text: '周' + name });
-    })),
-    el('div', { class: 'cal__grid' }, calendarCells(calendarMonth, days).map(function (cell) {
-      return calendarCellEl(cell, todayKey);
-    })),
-    days.length ? null : emptyEl('这个月没有订阅内容的更新'),
+    calendarData.warnings?.length ? el('div', { class: 'cal-warning', role: 'status', text: '部分剧集播出信息获取失败，当前日历可能不完整。可稍后刷新重试。' }) : null,
+    el('div', { class: 'cal-month-view' + (calendarLayout === 'agenda' ? ' is-hidden' : '') }, [
+      el('div', { class: 'cal__weekdays' }, CAL_WEEKDAYS.map(function (name) { return el('span', { text: '周' + name }); })),
+      el('div', { class: 'cal__grid' }, calendarCells(calendarMonth, filtered).map(function (cell) { return calendarCellEl(cell, today); })),
+    ]),
+    el('div', { class: 'cal-agenda-view' + (calendarLayout === 'agenda' ? ' is-selected' : '') }, filtered.length ? calendarAgendaEl(filtered, today) : null),
+    !filtered.length ? el('div', { class: 'cal-empty' }, [iconNode('calendar'), el('h3', { text: days.length ? '没有符合筛选的更新' : '这个月，暂时没有更新安排' }),
+      el('p', { text: days.length ? '试试其他剧集或下载状态。' : '订阅剧集后，已公布的播出日期会出现在这里。' }),
+      days.length ? buttonEl({ class: 'btn', on: { click: function () { calendarFilter = { status: 'all', series: 'all' }; renderCalendarFilters(); paintCalendar(); } } }, null, '清除筛选') : el('a', { class: 'btn', href: '#/subscribe' }, '查看订阅'),
+    ]) : null,
   ]);
 }
-
-/** 更新日历页：只有日历，不掺订阅管理。 */
+function renderCalendarFilters() {
+  const host = $('#calendar-filters'); if (!host || !calendarData) return;
+  const series = new Map();
+  (calendarData.days || []).forEach(function (day) { (day.items || []).forEach(function (item) { series.set(String(item.subscriptionId || item.tmdbId), item.title); }); });
+  if (!series.has(calendarFilter.series)) calendarFilter.series = 'all';
+  const seriesSelect = el('select', { id: 'calendar-series', 'aria-label': '筛选订阅剧集', on: { change: function (event) { calendarFilter.series = event.target.value; paintCalendar(); } } }, [
+    el('option', { value: 'all', text: '全部剧集' }), [...series.entries()].map(function (entry) { return el('option', { value: entry[0], text: entry[1] }); }),
+  ]);
+  seriesSelect.value = calendarFilter.series;
+  const stateSelect = el('select', { id: 'calendar-status', 'aria-label': '筛选更新状态', on: { change: function (event) { calendarFilter.status = event.target.value; paintCalendar(); } } }, [
+    el('option', { value: 'all', text: '全部状态' }), Object.keys(CAL_STATUS).filter(function (key) { return key !== 'partial'; }).map(function (key) { return el('option', { value: key, text: CAL_STATUS[key].label }); }),
+  ]);
+  stateSelect.value = calendarFilter.status;
+  fill(host, [el('div', { class: 'cal-filters__selects' }, [seriesSelect, stateSelect]), el('span', { id: 'calendar-count', class: 'field__hint', 'aria-live': 'polite' }),
+    el('span', { class: 'cal__legend' }, Object.values(CAL_STATUS).filter(function (state) { return state.kind !== 'partial'; }).map(function (state) { return el('span', {}, [el('i', { class: 'cal__dot is-' + state.kind }), state.label]); })),
+  ]);
+}
+async function loadCalendar(force) {
+  const body = $('#calendar-body'), nav = $('#calendar-nav'); if (!body || !nav) return;
+  calendarMonth = validMonthKey(calendarMonth) ? calendarMonth : thisMonth();
+  const requestedMonth = calendarMonth, requestId = ++calendarLoadId, viewId = renderToken;
+  const [year, month] = calendarMonth.split('-').map(Number);
+  const picker = el('input', { type: 'month', value: calendarMonth, min: '1900-01', max: '2100-12', 'aria-label': '选择月份', on: { change: function (event) {
+    if (validMonthKey(event.target.value)) { calendarMonth = event.target.value; loadCalendar(); }
+  } } });
+  const shift = function (delta) { calendarMonth = new Date(Date.UTC(year, month - 1 + delta, 1)).toISOString().slice(0, 7); loadCalendar(); };
+  fill(nav, [
+    el('div', { class: 'cal-nav__date' }, [buttonEl({ class: 'icon-btn', 'aria-label': '上个月', on: { click: function () { shift(-1); } } }, 'chevron-left'), el('label', { class: 'cal-month-picker' }, [el('span', { text: year + '年 ' + month + '月' }), iconNode('calendar'), picker]),
+      buttonEl({ class: 'icon-btn', 'aria-label': '下个月', on: { click: function () { shift(1); } } }, 'chevron-right'),
+      buttonEl({ class: 'btn btn--sm', on: { click: function () { calendarMonth = thisMonth(); loadCalendar(); } } }, null, '本月'),
+    ]),
+    el('div', { class: 'cal-nav__tools' }, [
+      el('div', { class: 'cal-layout', role: 'group', 'aria-label': '日历视图' }, [['month', '月历'], ['agenda', '时间线']].map(function (entry) { return buttonEl({ class: 'btn btn--sm' + (calendarLayout === entry[0] ? ' is-active' : ''), 'aria-pressed': String(calendarLayout === entry[0]), 'data-layout': entry[0], on: { click: function (event) {
+        calendarLayout = entry[0]; nav.querySelectorAll('[data-layout]').forEach(function (button) { button.classList.toggle('is-active', button === event.currentTarget); button.setAttribute('aria-pressed', String(button === event.currentTarget)); }); paintCalendar();
+      } } }, null, entry[1]); })),
+      buttonEl({ class: 'btn btn--sm', 'aria-label': '刷新日历', on: { click: function () { loadCalendar(true); } } }, 'refresh', '刷新'),
+    ]),
+  ]);
+  fill(body, el('div', { class: 'sk', style: 'height:420px', role: 'status', 'aria-label': '正在加载日历' }));
+  calendarData = null;
+  fill($('#calendar-summary'), []); fill($('#calendar-filters'), []);
+  try {
+    const path = '/calendar?month=' + encodeURIComponent(requestedMonth);
+    if (force) viewCache.delete(path);
+    const data = await cachedApi(path, 60 * 1000);
+    if (requestId !== calendarLoadId || viewId !== renderToken || !body.isConnected) return;
+    calendarData = data; renderCalendarFilters(); paintCalendar();
+  } catch (error) {
+    if (requestId === calendarLoadId && viewId === renderToken && body.isConnected) fill(body, [errorEl(error.message), buttonEl({ class: 'btn', on: { click: function () { loadCalendar(true); } } }, null, '重新加载')]);
+  }
+}
 async function viewCalendar(ctx) {
   calendarMonth = calendarMonth || thisMonth();
   fill(ctx.host, pageEl([
-    el('header', { class: 'page__head' }, [
-      el('div', {}, [
-        el('h1', { text: '更新日历' }),
-        el('p', {
-          class: 'page__sub',
-          text: '按 TMDB 播出日期列出每天更新哪些剧集；海报在日期框里，绿框是已下载，红框是漏掉的。',
-        }),
-      ]),
+    el('header', { class: 'page__head cal-page-head' }, [el('div', {}, [el('span', { class: 'eyebrow', text: 'YOUR WATCHLIST, DAY BY DAY' }), el('h1', { text: '追剧日历' }), el('p', { class: 'page__sub', text: '把期待排进日程。订阅剧集的播出安排与下载进度，一眼掌握。' })]),
+      el('a', { class: 'btn', href: '#/subscribe', 'aria-label': '管理订阅' }, [iconNode('bookmark'), el('span', { text: '管理订阅' })]),
     ]),
-    el('section', { class: 'block' }, [
-      el('div', { class: 'cal__bar', id: 'calendar-nav' }),
-      el('div', { id: 'calendar-body' }, el('div', { class: 'sk', style: 'height:110px' })),
-    ]),
+    el('div', { class: 'cal-summary', id: 'calendar-summary' }),
+    el('section', { class: 'cal-workspace' }, [el('div', { class: 'cal__bar', id: 'calendar-nav' }), el('div', { id: 'calendar-filters', class: 'cal-filters' }), el('div', { id: 'calendar-body', 'aria-live': 'polite' })]),
+    el('p', { class: 'cal-footnote', text: '播出日期来自 TMDB，可能随发行地区调整；完成状态以 WansPilot 的下载记录为准。' }),
   ]));
-
-  function shiftMonth(delta) {
-    const parts = (calendarMonth || thisMonth()).split('-').map(Number);
-    calendarMonth = new Date(Date.UTC(parts[0], parts[1] - 1 + delta, 1)).toISOString().slice(0, 7);
-    loadCalendar();
-  }
-
-  currentActions['cal-prev'] = function () { shiftMonth(-1); };
-  currentActions['cal-next'] = function () { shiftMonth(1); };
-  currentActions['cal-today'] = function () { calendarMonth = thisMonth(); loadCalendar(); };
-  currentActions['cal-more'] = function (button) {
-    const cell = button.closest('.cal__cell');
-    if (!cell) return;
-    const open = cell.classList.toggle('is-open');
-    button.textContent = open ? '收起' : (button.getAttribute('data-more') || '');
-  };
-
   await loadCalendar();
 }
 
@@ -4060,35 +4056,42 @@ function showLogin() {
   if (document.querySelector('#access-form')) return;
   ++renderToken;
   document.body.classList.add('is-locked');
-  document.title = '欢迎回来 · WansPilot';
+  document.title = '登录 · WansPilot';
   const accountMode = accessMode === 'password';
-  const userInput = el('input', { name: 'username', id: 'access-username', autocomplete: 'username', required: true, placeholder: '输入账号' });
-  const input = el('input', { name: 'token', type: 'password', autocomplete: 'current-password', required: true, placeholder: accountMode ? '输入密码' : '输入你的访问令牌', id: 'access-token' });
+  const userInput = el('input', { name: 'username', id: 'access-username', autocomplete: 'username', required: true, placeholder: '输入账号', autocapitalize: 'none', spellcheck: 'false', maxlength: '128' });
+  const input = el('input', { name: accountMode ? 'password' : 'token', type: 'password', autocomplete: 'current-password', required: true, placeholder: accountMode ? '输入密码' : '输入访问令牌', id: 'access-token' });
+  const reveal = buttonEl({ class: 'access__reveal', 'aria-label': '显示密码', 'aria-pressed': 'false', on: { click: function (event) {
+    const visible = input.type === 'password'; input.type = visible ? 'text' : 'password';
+    event.currentTarget.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+    event.currentTarget.setAttribute('aria-pressed', String(visible));
+    fill(event.currentTarget, iconNode('eye'));
+  } } }, 'eye');
   const note = el('p', { class: 'access__error', role: 'alert' });
-  const submit = buttonEl({ type: 'submit', class: 'btn btn--primary' }, 'arrow-right', '进入 WansPilot');
+  const submit = buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '登录');
   const form = el('form', { id: 'access-form', class: 'access__card' }, [
-    el('img', { src: './logo-mark.png', width: '54', height: '54', alt: 'WansPilot', class: 'access__logo' }),
-    el('span', { class: 'eyebrow', text: 'YOUR PERSONAL CINEMA' }),
-    el('h1', { text: '好故事，值得期待。' }),
-    el('p', { class: 'access__intro', text: '发现心动的电影，让每一集如期而至。' }),
-    accountMode ? el('label', { class: 'field' }, [el('span', { class: 'field__label', text: '账号' }), userInput]) : null,
-    el('label', { class: 'field' }, [el('span', { class: 'field__label', text: accountMode ? '密码' : '访问令牌' }), input]), note, submit,
-    accountMode ? el('p', { class: 'field__hint', text: '使用部署 YAML 中 WP_USERNAME 和 WP_PASSWORD 设置的账号密码登录。' }) : el('details', { class: 'access__help' }, [el('summary', { text: '首次使用，如何获取令牌？' }),
-      el('p', { text: '在 NAS 的终端执行以下命令，复制令牌后登录。令牌只保存在你的数据目录中。' }),
-      el('code', { text: 'docker exec wanspilot cat /data/access-token' }),
-      el('p', { text: '也可以通过 WP_ACCESS_TOKEN 环境变量设置自己的令牌（至少 16 个字符）。' }),
+    el('header', { class: 'access__brand' }, [
+      el('img', { src: './logo-mark.png', width: '44', height: '44', alt: '', class: 'access__logo' }),
+      el('h1', { text: 'WansPilot' }),
     ]),
-    el('span', { class: 'access__footer', text: 'WansPilot · 你的私人影视空间' }),
+    el('p', { class: 'access__intro', text: accountMode ? '登录你的账号' : '登录你的私人影视空间' }),
+    el('div', { class: 'access__fields' }, [
+      accountMode ? el('label', { class: 'field' }, [el('span', { class: 'field__label', text: '账号' }), userInput]) : null,
+      el('label', { class: 'field' }, [el('span', { class: 'field__label', text: accountMode ? '密码' : '访问令牌' }), el('span', { class: 'access__password' }, [input, reveal])]),
+    ]), note, submit,
+    accountMode ? null : el('details', { class: 'access__help' }, [el('summary', { text: '如何获取访问令牌？' }),
+      el('code', { text: 'docker exec wanspilot cat /data/access-token' }),
+    ]),
   ]);
   fill($('#view'), el('div', { class: 'access' }, form));
   form.addEventListener('submit', async function (event) {
-    event.preventDefault(); submit.disabled = true; note.textContent = '';
+    event.preventDefault(); if (submit.disabled) return;
+    submit.disabled = true; submit.textContent = '正在登录…'; note.textContent = '';
     try {
       await api('/auth/login', { method: 'POST', body: accountMode ? { username: userInput.value.trim(), password: input.value } : { token: input.value.trim() } });
       input.value = ''; accessReady = true; document.body.classList.remove('is-locked');
       viewStash.clear(); settingsDraft = null; settingsDirty = false;
       await startApp();
-    } catch (error) { note.textContent = error.message; submit.disabled = false; }
+    } catch (error) { note.textContent = error.message; submit.disabled = false; submit.textContent = '登录'; }
   });
   (accountMode ? userInput : input).focus({ preventScroll: true });
 }
