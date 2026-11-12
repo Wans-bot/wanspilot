@@ -978,7 +978,7 @@ lzc-file-picker { display: block; width: 100%; height: 100%; }
   .topbar__tools { margin-left: auto; gap: 6px; }
   .topbar__tools .nav__item { padding: 10px; border-radius: 12px; }
   .topbar__tools .nav__label { display: none; }
-  .topbar__tools .themebtn { padding: 5px 0; }
+  .topbar__tools .themebtn { padding: 0; }
 
   /* 底部标签栏：5 个主入口等分、单行；当前项用图标底圈加变色表示 */
   .nav {
@@ -1364,54 +1364,32 @@ textarea { border-radius: var(--radius-sm); }
 }
 .toast--info .toast__icon { color: var(--text-2); }
 
-/* 主题切换：只有图标，左右滑动的开关 */
+/* 主题切换：单个图标按钮，显示当前主题，点击切到另一个 */
 .themebtn {
   padding: 0;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   background: transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.themebtn__track {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 60px;
-  height: 28px;
-  padding: 2px;
-  gap: 0;
+.themebtn .icon { width: 18px; height: 18px; }
+.themebtn:hover { background: var(--hover-soft); color: var(--text); }
+/* 切换瞬间给全站挂线性过渡，0.4 秒内渐隐渐显；结束后摘掉，不影响平时交互 */
+html.theme-fade,
+html.theme-fade body,
+html.theme-fade *,
+html.theme-fade *::before,
+html.theme-fade *::after {
+  transition: background-color 0.4s linear, border-color 0.4s linear, color 0.4s linear,
+    fill 0.4s linear, stroke 0.4s linear, opacity 0.4s linear !important;
 }
-.themebtn__side {
-  position: relative;
-  z-index: 2;
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 24px;
-  color: var(--text-3);
-  transition: color 0.15s ease;
-}
-.themebtn__side .icon { width: 15px; height: 15px; }
-.themebtn__thumb {
-  position: absolute;
-  z-index: 1;
-  top: 2px;
-  left: 2px;
-  width: 28px;
-  height: 24px;
-  border-radius: 2px;
-  background: var(--surface-3);
-  border: 1px solid var(--line-strong);
-  transition: transform 0.16s ease;
-}
-html[data-theme='light'] .themebtn__thumb { transform: translateX(28px); }
-html[data-theme='dark'] .themebtn__side[data-side='dark'],
-html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
-  .themebtn__thumb, .themebtn__side { transition: none; }
+  html.theme-fade,
+  html.theme-fade body,
+  html.theme-fade *,
+  html.theme-fade *::before,
+  html.theme-fade *::after { transition: none !important; }
 }
-
 /* 筛选：条件平铺成 chips，横向可滚，不用下拉 */
 .filters {
   display: block;

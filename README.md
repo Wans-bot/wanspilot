@@ -65,10 +65,10 @@ wanspilot: /downloads        ← 同样挂进来（设置页「本地挂载路�
 
 在「设置 → 影视与网络 → 配置资源渠道」或资源搜索页的「管理资源渠道」进入。原公共索引源继续保留，可另外添加最多 12 个 Torznab / RSS 渠道；所有已启用渠道同时用于手动搜索和自动订阅。
 
-内置源：The Pirate Bay（英文影视）、Torrents-CSV（含中文内容）、Mikan Project（中文动漫，直连可用），以及需要配置网络代理后才启用的 Nyaa（动漫）和 YTS（电影）。Mikan 不公布做种数，结果显示「做种 未知」，也不会被最低做种数筛掉。
+内置源（直连）：The Pirate Bay（英文影视）、Torrents-CSV（含中文内容）、Mikan Project（中文动漫）、动漫花园 dmhy（中文动漫）与 acg.rip（中文动漫与日剧）。需要配置网络代理后才启用：Nyaa（动漫）、YTS（电影）、BT4G 与 Knaben（聚合站，覆盖 1337x、LimeTorrents 等大站的种子）。Mikan、动漫花园、acg.rip 不公布做种数，结果显示「做种 未知」，也不会被最低做种数筛掉。
 
 - **Torznab**：填写自己部署的 Prowlarr / Jackett 提供的 Torznab 地址和 API Key。Prowlarr 使用单个索引器地址，例如 `http://NAS:9696/1/api`；Jackett 可以复制单站或聚合 Torznab Feed 地址。需要先在索引服务中配置站点与访问权限。
-- **RSS**：填写完整 RSS 2.0 订阅链接。地址里写 `{query}` 即按关键词搜索（如 `https://mikanime.tv/RSS/Search?searchstr={query}`），不写占位符时只检索 Feed 当前返回的条目，缓存 60 秒。暂不支持 Atom、JSON Feed 或 Usenet/NZB。弹窗里的「常用预设」可直接填入 Mikan、动漫花园、acg.rip、Nyaa、Prowlarr、Jackett 的模板。
+- **RSS**：填写完整 RSS 2.0 订阅链接。地址里写 `{query}` 即按关键词搜索（如 `https://mikanime.tv/RSS/Search?searchstr={query}`），不写占位符时只检索 Feed 当前返回的条目，缓存 60 秒。暂不支持 Atom、JSON Feed 或 Usenet/NZB。弹窗里的「常用预设」可直接填入 Mikan、Nyaa、Prowlarr、Jackett 的模板。
 - 每个渠道可测试、编辑、启停和移除。自定义渠道直接连接，不使用全局代理；海外站点可由 NAS 索引服务处理代理。
 - API Key 与含 passkey 的完整地址只保存在 `/data/indexers.json`（权限 0600）。浏览器不回显原地址或密钥；编辑时留空保留原值，显式勾选可清除 API Key。请保护数据卷与备份。
 - 搜索结果使用临时资源标识（有效期 30 分钟）；重启、修改或停用渠道后需重新搜索。种子文件由服务端取回并原样提交给 qB，保留私有 tracker 信息。

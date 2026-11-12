@@ -361,7 +361,19 @@ try {
   await mobile.$eval('.cal-agenda', node => node.scrollIntoView({ block: 'start' })); await pause(180);
   await mobile.screenshot({ path: path.join(out, 'calendar-timeline-mobile.png') });
   await mobile.evaluate(() => scrollTo(0, 0));
-  await mobile.click('[data-action="theme-toggle"]'); await checkLayout(mobile, 'calendar mobile light');
+  await mobile.click('[data-action="theme-toggle"]');
+  const fade = await mobile.evaluate(() => ({
+    active: document.documentElement.classList.contains('theme-fade'),
+    duration: getComputedStyle(document.body).transitionDuration,
+    icons: document.querySelectorAll('[data-action="theme-toggle"] svg.icon').length,
+  }));
+  assert.equal(fade.active, true, 'theme switch fades linearly instead of snapping');
+  assert.match(fade.duration, /0\.4s/, 'theme fade lasts 0.4s');
+  assert.equal(fade.icons, 1, 'theme switch is a single icon button');
+  record('theme toggle fades linearly', fade);
+  await pause(700);
+  assert.equal(await mobile.evaluate(() => document.documentElement.classList.contains('theme-fade')), false, 'theme fade class is cleared afterwards');
+  await checkLayout(mobile, 'calendar mobile light');
   await mobile.screenshot({ path: path.join(out, 'calendar-light-mobile.png'), fullPage: true });
   await mobile.click('[data-action="theme-toggle"]');
   await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');

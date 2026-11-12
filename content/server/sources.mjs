@@ -8,6 +8,9 @@ import { configuredSources, registerRelease } from './indexers.mjs';
  * - mikan：中文动漫站，RSS 搜索直连可达；种子文件里才有 info hash，走 release 机制由服务端拉取。
  * - nyaa：动漫资源最全，但实测在受限网络下不可达，只有配置了「网络代理」才启用。
  * - yts：电影站，JSON API 支持关键词搜索，同样需要代理。
+ * - dmhy / acg.rip：中文动漫与日剧的 BT 站，RSS 搜索直连可用，种子文件里才有 info hash。
+ * - bt4g / knaben：聚合站，覆盖 1337x、LimeTorrents、The Pirate Bay 等大站的种子，
+ *   实测在受限网络下不可达，只有配置了「网络代理」才启用。
  *
  * 本模块保存最近 10 分钟的结果，避免同一个关键词反复打站点。
  */
@@ -15,6 +18,7 @@ import { httpFetch } from './tmdb.mjs';
 import { getSettings } from './settings.mjs';
 import { log } from './log.mjs';
 
+import { parseKnaben, parseMagnetFeed, parseTorrentFeed } from './feed.mjs';
 // 盒子上单次 connect 实测 7–12 秒，所以单源给 9 秒、只试一次；
 // 再叠一个总时限：到点先用已返回的源出结果，慢源报告成「超时未返回」，
 // 不让它拖住整次搜索（实测一个慢源能把一次搜索拖到 30–65 秒）。
@@ -411,6 +415,89 @@ function scoreItem(item, context) {
   return Math.round(score * 10) / 10;
 }
 
+/* -------------------------------------------------- 追加的公共索引站 */
+
+/** 只有 .torrent 链接、没有 info hash 的源：走 release 机制，下载时再取 hash。 */
+function releaseFeedItems(rows, indexer, indexerName) {
+  const items = [];
+  for (const row of rows) {
+    const releaseId = registerRelease({ key: indexer, url: row.torrentUrl });
+    const item = baseItem({
+      infoHash: '',
+      title: row.title,
+      indexer,
+      indexerName,
+      sizeBytes: row.sizeBytes,
+      seeders: Number(row.seeders) || 0,
+      leechers: Number(row.leechers) || 0,
+      publishedAt: row.publishedAt || 0,
+    });
+    // releaseKey 参与去重：没有 infoHash 的源必须给稳定键，否则会被当成无链接条目丢掉
+    items.push({ ...item, id: `${indexer}:${releaseId}`, releaseId, releaseKey: `${indexer}:${row.torrentUrl}`, seedersUnknown: !row.seeders, trustedQuery: true });
+    if (items.length >= 60) break;
+  }
+  return items;
+}
+
+/** 带 info hash 的源：站点不公布做种数时标 unknown，不当作 0 参与筛选。 */
+function hashFeedItems(rows, indexer, indexerName) {
+  const items = [];
+  for (const row of rows) {
+    if (!/^[a-f0-9]{40}$/.test(String(row.infoHash || ''))) continue;
+    const known = row.seeders !== null && row.seeders !== undefined;
+    const item = baseItem({
+      infoHash: row.infoHash,
+      title: row.title,
+      indexer,
+      indexerName,
+      sizeBytes: row.sizeBytes,
+      seeders: known ? row.seeders : 0,
+      leechers: Number(row.leechers) || 0,
+      publishedAt: row.publishedAt || 0,
+    });
+    items.push({ ...item, seedersUnknown: !known, trustedQuery: true });
+    if (items.length >= 80) break;
+  }
+  return items;
+}
+
+async function fetchFeedXml(url) {
+  const res = await httpFetch(url, { headers: { 'user-agent': UA }, timeoutMs: SOURCE_TIMEOUT_MS, attempts: SOURCE_ATTEMPTS });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+// 动漫花园：中文动漫最大站，RSS 搜索直连可用。
+async function searchDmhy(query) {
+  const xml = await fetchFeedXml(`https://share.dmhy.org/topics/rss/rss.xml?keyword=${encodeURIComponent(query)}`);
+  return releaseFeedItems(parseTorrentFeed(xml), 'dmhy', '动漫花园');
+}
+
+// acg.rip：中文动漫与日剧 BT 站，RSS 结构与动漫花园一致。
+async function searchAcgRip(query) {
+  const xml = await fetchFeedXml(`https://acg.rip/.xml?term=${encodeURIComponent(query)}`);
+  return releaseFeedItems(parseTorrentFeed(xml), 'acgrip', 'acg.rip');
+}
+
+// BT4G：聚合站，覆盖 1337x、LimeTorrents 等大站的种子，RSS 直接给 magnet。
+async function searchBt4g(query) {
+  const xml = await fetchFeedXml(`https://bt4gprx.com/search?q=${encodeURIComponent(query)}&page=rss`);
+  return hashFeedItems(parseMagnetFeed(xml), 'bt4g', 'BT4G');
+}
+
+// Knaben：聚合上百个站的 JSON API，按关键词 POST 查询。
+async function searchKnaben(query) {
+  const res = await httpFetch('https://knaben.eu/api/v1/search', {
+    method: 'POST',
+    headers: { 'user-agent': UA, 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ query, search_field: 'title', order_by: 'seeders', order_direction: 'desc', size: 100, hide_unsafe: true }),
+    timeoutMs: SOURCE_TIMEOUT_MS,
+    attempts: SOURCE_ATTEMPTS,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return hashFeedItems(parseKnaben(await res.json()), 'knaben', 'Knaben');
+}
+
 /* ------------------------------------------------------------------ 入口 */
 
 const REGISTRY = [
@@ -419,7 +506,16 @@ const REGISTRY = [
   { id: 'mikan', name: 'Mikan Project', run: searchMikan },
   { id: 'nyaa', name: 'Nyaa', run: searchNyaa, needsProxy: true },
   { id: 'yts', name: 'YTS', run: searchYts, needsProxy: true },
+  { id: 'dmhy', name: '动漫花园', run: searchDmhy },
+  { id: 'acgrip', name: 'acg.rip', run: searchAcgRip },
+  { id: 'bt4g', name: 'BT4G', run: searchBt4g, needsProxy: true },
+  { id: 'knaben', name: 'Knaben', run: searchKnaben, needsProxy: true },
 ];
+
+/** 内置源 id 列表（含需要代理才启用的），给设置页和测试用。 */
+export function builtinSourceIds() {
+  return REGISTRY.map((source) => source.id);
+}
 
 export function matchesQueryTitle(title,query) {
  const keywords=String(query || '').normalize('NFKC').toLowerCase().split(/[\s:：\-]+/).filter(word=>word.length>=2).slice(0,3);

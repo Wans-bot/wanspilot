@@ -1716,8 +1716,6 @@ let resourceItems = [];
 const SOURCE_PRESETS = [
   { label: '选择常用预设…', name: '', type: 'torznab', url: '' },
   { label: 'Mikan 蜜柑计划（中文动漫，直连）', name: 'Mikan 蜜柑计划', type: 'rss', url: 'https://mikanime.tv/RSS/Search?searchstr={query}' },
-  { label: '动漫花园（中文动漫，多需代理）', name: '动漫花园', type: 'rss', url: 'https://share.dmhy.org/topics/rss/rss.xml?keyword={query}' },
-  { label: 'acg.rip（中文综合，多需代理）', name: 'acg.rip', type: 'rss', url: 'https://acg.rip/.xml?term={query}' },
   { label: 'Nyaa（动漫，需代理）', name: 'Nyaa', type: 'rss', url: 'https://nyaa.si/?page=rss&q={query}&c=0_0&f=0' },
   { label: 'Prowlarr（本机聚合，Torznab）', name: 'Prowlarr', type: 'torznab', url: 'http://192.168.1.10:9696/1/api' },
   { label: 'Jackett（本机聚合，Torznab）', name: 'Jackett', type: 'torznab', url: 'http://192.168.1.10:9117/api/v2.0/indexers/all/results/torznab/api' },
@@ -4391,11 +4389,26 @@ function themeLabel(pref) {
   return found ? found[1] : '夜间';
 }
 
+let themeFadeTimer = 0;
+
+/** 切换主题时让颜色线性过渡到新主题，而不是瞬间跳变；尊重系统的「减少动效」。 */
+function startThemeFade(root) {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // 先摘掉再强制重排，连续点两次也能重新走一遍过渡
+  root.classList.remove('theme-fade');
+  void root.offsetWidth;
+  root.classList.add('theme-fade');
+  clearTimeout(themeFadeTimer);
+  themeFadeTimer = setTimeout(function () { root.classList.remove('theme-fade'); }, 520);
+}
+
 function applyTheme(pref, persist) {
   const next = pref === 'light' ? 'light' : 'dark';
   const root = document.documentElement;
+  const changed = root.getAttribute('data-theme') !== next;
   root.setAttribute('data-theme', next);
   root.setAttribute('data-theme-pref', next);
+  if (changed) startThemeFade(root);
   try {
     localStorage.setItem(THEME_KEY, next);
   } catch {
@@ -4403,11 +4416,12 @@ function applyTheme(pref, persist) {
   }
   const button = document.querySelector('[data-action="theme-toggle"]');
   if (button) {
-    const sides = button.querySelectorAll('.themebtn__side');
-    if (sides[0]) fill(sides[0], iconNode('sun'));
-    if (sides[1]) fill(sides[1], iconNode('moon'));
-    button.setAttribute('aria-checked', next === 'light' ? 'true' : 'false');
-    button.setAttribute('aria-label', '当前' + themeLabel(next) + '主题，点击切换');
+    // 单按钮：显示当前主题的图标，点击切到另一个
+    const other = next === 'light' ? 'dark' : 'light';
+    const hint = '当前' + themeLabel(next) + '主题，点击切换到' + themeLabel(other) + '主题';
+    fill(button, iconNode(next === 'light' ? 'sun' : 'moon'));
+    button.setAttribute('aria-label', hint);
+    button.setAttribute('title', hint);
   }
   if (persist && appState.settings && appState.settings.theme !== next) {
     appState.settings.theme = next;
