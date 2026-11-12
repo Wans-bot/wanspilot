@@ -26,11 +26,15 @@ export class JsonStore {
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') return parsed;
-      log.warn(`[store] ${this.filePath} 内容不是对象，改用默认值`);
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed) === Array.isArray(this.defaults)) return parsed;
+      throw new SyntaxError('存储文件的结构不正确');
     } catch (err) {
       if (err.code !== 'ENOENT') {
-        log.warn(`[store] 读取 ${this.filePath} 失败，改用默认值: ${err.message}`);
+        if (!(err instanceof SyntaxError)) throw err;
+        const backup = `${this.filePath}.corrupt-${Date.now()}`;
+        fs.copyFileSync(this.filePath, backup);
+        fs.chmodSync(backup, 0o600);
+        log.warn(`[store] ${this.filePath} 损坏，已备份后使用默认值: ${err.message}`);
       }
     }
     // 深拷贝默认值，避免调用方改到共享常量
@@ -43,15 +47,21 @@ export class JsonStore {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    this.pending = false;
     const dir = path.dirname(this.filePath);
     try {
       fs.mkdirSync(dir, { recursive: true });
       const tmp = `${this.filePath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+      const fd = fs.openSync(tmp, 'w', 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(this.data, null, 2), 'utf8');
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
       fs.renameSync(tmp, this.filePath);
+      this.pending = false;
     } catch (err) {
+      this.pending = true;
       log.error(`[store] 写入 ${this.filePath} 失败: ${err.message}`);
+      throw err;
     }
   }
 
@@ -61,7 +71,12 @@ export class JsonStore {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      if (this.pending) this.flush();
+      if (this.pending) {
+        try { this.flush(); } catch {
+          this.timer = setTimeout(() => { this.timer = null; this.save(); }, 5000);
+          this.timer.unref?.();
+        }
+      }
     }, this.debounceMs);
     if (this.timer.unref) this.timer.unref();
   }

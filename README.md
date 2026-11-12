@@ -22,7 +22,7 @@ docker compose up -d
 
 **部署时不用填 qB 的地址和账号**，容器起来后：
 
-1. 打开 `http://<NAS 局域网 IP>:3000`；
+1. 打开 `http://<NAS 局域网 IP>:3000`，执行 `docker exec wanspilot cat /data/access-token` 读取首次自动生成的访问令牌并登录；
 2. 进「设置」→「qBittorrent」，填 **地址、用户名、密码**（以及可选的保存目录），点「测试 qB 连接」，通过后保存；
 3. 按需填 TMDB API Key，点「测试 TMDB」。
 
@@ -37,6 +37,7 @@ docker compose up -d
 | 变量 | 说明 |
 | --- | --- |
 | `PUID` / `PGID` | 容器内运行用户，默认 1000:1000 |
+| `WP_ACCESS_TOKEN` | 可选，指定至少 16 字符的访问令牌；未指定时自动生成并持久化到 `/data/access-token` |
 | `WP_TMDB_API_KEY` | 可选，预置 TMDB Key，省得进设置页填 |
 | **qBittorrent 地址 / 用户名 / 密码 / 保存目录 / 本地挂载路径 / 分类** | **不在 compose 里配，部署后在设置页填** |
 
@@ -60,6 +61,22 @@ wanspilot: /downloads        ← 同样挂进来（设置页「本地挂载路�
 | `/downloads` | 可选，与 qB 共享的下载目录 |
 | `/cache` | 海报缓存，可丢 |
 
+## 账号密码登录（绿联 NAS 简化部署）
+
+使用 `compose.nas.yml`，与 `Dockerfile` 和 `content/` 放在同一目录。修改 YAML 中 `WP_USERNAME` 和 `WP_PASSWORD`（密码至少 8 个字符），执行 `docker compose -f compose.nas.yml up -d --build`。这是容器内 root 运行的简化配置，媒体目录按实际情况修改。
+
+配置账号密码后，登录页自动显示账号和密码输入框，不再使用令牌登录。只配置其中一项或密码过短会拒绝启动。修改凭据后重新创建容器，旧会话自动失效。未配置账号密码时保留原有令牌模式；账号模式若需自动化 Bearer 访问，另行配置 `WP_ACCESS_TOKEN`。
+
+## 1.1.0 的安全与交互约定
+
+- 深色界面采用影院式首页、精选背景和海报墙，浅色主题与手机底部导航同步适配。
+- 设置表单保留未保存草稿；后台自检不会覆盖输入，测试连接使用当前填写的值。
+- TMDB Key 与 qB 密码不会通过设置接口回显；输入留空保留原值，勾选明确的清除选项才删除。
+- 登录 Cookie 有效期 7 天，采用 HttpOnly 和 SameSite=Strict。自动化使用 `Authorization: Bearer <访问令牌>`。退出仅清除当前浏览器 Cookie；更换令牌并重启服务会使原有会话失效。
+- 整理前可以先预览。正式整理优先建立硬链接；跨文件系统时复制，始终保留 qB 原文件和做种路径。跨盘复制需要额外空间，样本文件只跳过、不删除。
+- 海报缓存按 512 MiB / 30 天预算定期清理；运行日志自动轮转。请继续备份 `/data`。
+- 失败任务保留原因并支持重试；订阅区分下载中与已完成，避免提交失败却错误标为已下载。
+
 ## 从源码构建
 
 ```bash
@@ -76,6 +93,18 @@ npm ci --omit=dev
 WP_DATA_DIR=./.dev/data WP_DOWNLOAD_DIR=./.dev/downloads sh entry.sh
 ```
 
+开发验收（使用隔离数据，不提交真实下载）：
+
+```bash
+npm ci --prefix content
+npm test --prefix content
+npm run check --prefix content
+# 需本机安装 Chromium，或通过 WP_CHROME_PATH 指定可执行文件
+npm run test:browser --prefix content
+```
+
+浏览器验收使用示例接口数据，截图和结果写到 `verify/cinema-v3/`。设计参考 Seerr 的影视发现层级、Jellyfin Web 的主题体系，保留 WansPilot 品牌与原生页面结构。
+
 ## 常见问题
 
 **设置页提示「未配置 qBittorrent」** — 填地址并保存；点「测试 qB 连接」看具体报错。qB 5.0 起设置项在「选项 → Web UI」。
@@ -86,7 +115,7 @@ WP_DATA_DIR=./.dev/data WP_DOWNLOAD_DIR=./.dev/downloads sh entry.sh
 
 **加任务返回 403** — qB 的「Web UI → 认证」里打开了「对本地主机跳过认证」但实际不在同一台机器上时，需要填用户名密码；或反过来，把 wanspilot 的出口 IP 加进白名单。
 
-**剩余空间显示 0** — qB 还没上报 `free_space_on_disk`，等一轮轮询（2 秒）；若一直 0，说明 qB 版本太老，忽略即可，不影响下载。
+**剩余空间显示未知或 0** — 未上报的空间显示为未知；真实剩余空间为 0 或配额用尽时会阻止新增下载。请确认 qB 所在磁盘空间，并检查配额。
 
 **自动整理没动文件** — 设置页「本地挂载路径」留空，或该路径在容器里不可读（compose 里没挂下载目录）。看日志 `[organize]` 行给出的 skipped 原因。
 

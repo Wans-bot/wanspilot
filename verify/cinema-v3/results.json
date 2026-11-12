@@ -1,0 +1,170 @@
+{
+  "passed": 28,
+  "fixtures": true,
+  "realArtSource": true,
+  "checks": [
+    {
+      "name": "login desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "好故事，值得期待。",
+      "mainChildren": 1
+    },
+    {
+      "name": "home desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "奥德赛",
+      "mainChildren": 1
+    },
+    {
+      "name": "featured selection"
+    },
+    {
+      "name": "self-test preserves draft"
+    },
+    {
+      "name": "navigation restores draft"
+    },
+    {
+      "name": "save failure preserves draft"
+    },
+    {
+      "name": "save keeps secret masked"
+    },
+    {
+      "name": "search desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "搜索",
+      "mainChildren": 1
+    },
+    {
+      "name": "detail desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "奥德赛",
+      "mainChildren": 1
+    },
+    {
+      "name": "resources desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "找资源",
+      "mainChildren": 1
+    },
+    {
+      "name": "tasks desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "下载任务",
+      "mainChildren": 1
+    },
+    {
+      "name": "subscribe desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "订阅",
+      "mainChildren": 1
+    },
+    {
+      "name": "calendar desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "更新日历",
+      "mainChildren": 1
+    },
+    {
+      "name": "health desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "运行状况",
+      "mainChildren": 1
+    },
+    {
+      "name": "home mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "奥德赛",
+      "mainChildren": 1
+    },
+    {
+      "name": "mobile bottom navigation",
+      "top": 755.15625,
+      "bottom": 844
+    },
+    {
+      "name": "search mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "搜索",
+      "mainChildren": 1
+    },
+    {
+      "name": "detail mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "奥德赛",
+      "mainChildren": 1
+    },
+    {
+      "name": "resources mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "找资源",
+      "mainChildren": 1
+    },
+    {
+      "name": "tasks mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "下载任务",
+      "mainChildren": 1
+    },
+    {
+      "name": "subscribe mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "订阅",
+      "mainChildren": 1
+    },
+    {
+      "name": "calendar mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "更新日历",
+      "mainChildren": 1
+    },
+    {
+      "name": "health mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "运行状况",
+      "mainChildren": 1
+    },
+    {
+      "name": "settings mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "设置",
+      "mainChildren": 1
+    },
+    {
+      "name": "home mobile light",
+      "width": 390,
+      "overflow": false,
+      "heading": "奥德赛",
+      "mainChildren": 1
+    },
+    {
+      "name": "organizer preview dialog"
+    },
+    {
+      "name": "logout returns to access screen"
+    },
+    {
+      "name": "no browser JavaScript exceptions"
+    }
+  ],
+  "errors": []
+}

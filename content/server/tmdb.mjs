@@ -30,11 +30,12 @@ let proxyAgent = null;
 let proxyAgentFor = '';
 
 /** 按当前设置取 dispatcher。代理地址变化时重建。 */
-function dispatcher() {
-  const { proxy } = getSettings();
+function dispatcher(settings = getSettings()) {
+  const { proxy } = settings;
   if (!proxy) return directAgent;
   if (proxyAgent && proxyAgentFor === proxy) return proxyAgent;
   try {
+    if (proxyAgent) void proxyAgent.close().catch(() => {});
     proxyAgent = new ProxyAgent({ uri: proxy, connect: { timeout: CONNECT_TIMEOUT_MS } });
     proxyAgentFor = proxy;
     log.info(`[tmdb] 已启用网络代理 ${proxy}`);
@@ -60,13 +61,13 @@ function dispatcher() {
  * @returns {Promise<Response>}
  */
 export async function httpFetch(url, options = {}) {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, attempts = DEFAULT_ATTEMPTS, ...rest } = options;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, attempts = DEFAULT_ATTEMPTS, settings = getSettings(), ...rest } = options;
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const res = await undiciFetch(url, {
         ...rest,
-        dispatcher: dispatcher(),
+        dispatcher: dispatcher(settings),
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (res.status < 500 || attempt >= attempts) return res;
@@ -77,7 +78,7 @@ export async function httpFetch(url, options = {}) {
       if (attempt >= attempts) break;
     }
     const waitMs = RETRY_BASE_MS * 2 ** (attempt - 1);
-    log.warn(`[http] 第 ${attempt} 次尝试失败，${waitMs}ms 后重试：${String(url).slice(0, 96)} — ${lastError.message}`);
+    log.warn(`[http] 第 ${attempt} 次尝试失败，${waitMs}ms 后重试：${String(url).replace(/([?&]api_key=)[^&]+/gi, '$1[redacted]').replace(/:\/\/[^/@]+@/, '://[redacted]@').slice(0, 96)} — ${lastError.message}`);
     await new Promise((r) => setTimeout(r, waitMs));
   }
   throw lastError;
@@ -129,9 +130,10 @@ function rememberResponse(cacheKey, payload) {
  * @param {string} apiPath 形如 `/movie/popular`
  * @param {Record<string, any>} [params]
  */
-export async function tmdbGet(apiPath, params = {}) {
-  const key = requireKey();
-  const { tmdbApiBase } = getSettings();
+export async function tmdbGet(apiPath, params = {}, settings = getSettings()) {
+  const key = settings.tmdbApiKey;
+  if (!key) { const err = new Error('尚未填写 TMDB API Key'); err.statusCode = 428; throw err; }
+  const { tmdbApiBase } = settings;
   const cacheKey = responseCacheKey(apiPath, params, tmdbApiBase, key);
   const cached = responseCache.get(cacheKey);
   if (cached && Date.now() - cached.at < RESPONSE_TTL_MS) return cached.payload;
@@ -154,7 +156,7 @@ export async function tmdbGet(apiPath, params = {}) {
   if (isBearerToken(key)) headers.authorization = `Bearer ${key}`;
   else url.searchParams.set('api_key', key);
 
-  const res = await httpFetch(url.toString(), { headers, timeoutMs: 15000 });
+  const res = await httpFetch(url.toString(), { headers, timeoutMs: 15000, settings });
   const text = await res.text();
 
   let payload = null;
@@ -537,12 +539,12 @@ const inflight = new Map();
  * 取回 TMDB 图片。同一路径的并发请求会合并。
  * @returns {Promise<{body: Buffer, contentType: string}>}
  */
-export async function fetchImage(rawPath, rawSize) {
+export async function fetchImage(rawPath, rawSize, settings = getSettings()) {
   const size = IMAGE_SIZES.has(rawSize) ? rawSize : 'w342';
   const safePath = String(rawPath || '').trim();
   if (!/^\/[A-Za-z0-9._\-\/]+$/.test(safePath)) return placeholderImage();
 
-  const key = `${size}${safePath}`;
+  const key = `${settings.tmdbImageBase}|${size}${safePath}`;
   const cacheFile = path.join(cacheDir(), `${crypto.createHash('sha1').update(key).digest('hex')}.img`);
 
   try {
@@ -557,13 +559,13 @@ export async function fetchImage(rawPath, rawSize) {
   if (inflight.has(key)) return inflight.get(key);
 
   const task = (async () => {
-    const { tmdbImageBase } = getSettings();
+    const { tmdbImageBase } = settings;
     // TMDB 图片地址约定为 <图片前缀>/<尺寸><文件路径>，例如
     // https://tmdb-image-prod.b-cdn.net/t/p + /w342 + /pB8.jpg
     const base = tmdbImageBase.replace(/\/+$/, '');
     const sized = `${base}/${size}${safePath.startsWith('/') ? safePath : `/${safePath}`}`;
     // 海报是批量加载，失败由前端按需重取，这里只重试一次，避免整墙变慢。
-    const res = await httpFetch(sized, { timeoutMs: 20000, attempts: 2 });
+    const res = await httpFetch(sized, { timeoutMs: 20000, attempts: 2, settings });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = Buffer.from(await res.arrayBuffer());
     if (!buf.length) throw new Error('空响应');
@@ -602,8 +604,7 @@ function guessImageType(file) {
 
 /* ------------------------------------------------------------------- 自检 */
 
-export async function tmdbStatus() {
-  const settings = getSettings();
+export async function tmdbStatus(settings = getSettings()) {
   const out = { tmdbKeySet: Boolean(settings.tmdbApiKey), tmdbOk: false, tmdbMessage: '', tmdbImageOk: false, tmdbImageMessage: '' };
 
   if (!out.tmdbKeySet) {
@@ -612,7 +613,7 @@ export async function tmdbStatus() {
     return out;
   }
   try {
-    const data = await tmdbGet('/configuration');
+    const data = await tmdbGet('/configuration', {}, settings);
     const bases = (data.images && data.images.secure_base_url) || '';
     out.tmdbOk = true;
     out.tmdbMessage = `TMDB 连接正常${bases ? `（官方图片前缀 ${bases}）` : ''}`;
@@ -620,7 +621,7 @@ export async function tmdbStatus() {
     out.tmdbMessage = err.message;
   }
   try {
-    const probe = await fetchImage('/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg', 'w92');
+    const probe = await fetchImage('/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg', 'w92', settings);
     const isPlaceholder = String(probe.contentType).includes('svg');
     out.tmdbImageOk = !isPlaceholder;
     out.tmdbImageMessage = isPlaceholder ? '海报源不可达，请检查「TMDB 图片地址」设置' : '海报源连接正常';

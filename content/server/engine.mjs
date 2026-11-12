@@ -14,6 +14,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { JsonStore } from './store.mjs';
 import { log } from './log.mjs';
+import { capacityCheck } from './capacity.mjs';
 import { getSettings } from './settings.mjs';
 import { clientFromSettings } from './qbittorrent.mjs';
 
@@ -66,11 +67,11 @@ export function reconfigure() {
   const next = clientFromSettings(settings);
   const fingerprint = (client) => (client ? `${client.baseUrl}|${client.username}|${client.password}` : '');
   const changed = fingerprint(next) !== fingerprint(qb);
-  qb = next;
   if (!changed) {
     ensurePolling();
     return qb;
   }
+  qb = next;
   filesCache.clear();
   freeBytes = null;
   freeBytesAt = 0;
@@ -140,7 +141,7 @@ async function pollOnce() {
       const raw = byHash.get(hash);
       if (!raw) {
         // qB 里已经没有这个任务：宽限期内保留乐观项，否则认为用户在 qB 里删掉了
-        if (now - record.addedOnMs < PENDING_GRACE_MS) {
+        if (record.error || now - record.addedOnMs < PENDING_GRACE_MS) {
           next.set(hash, items.get(hash) || optimistic(record));
           continue;
         }
@@ -204,7 +205,7 @@ async function refreshNextFiles() {
     const files = await qb.torrentsFiles(hash);
     filesCache.set(hash, {
       at: Date.now(),
-      files: files.slice(0, 200).map((f) => ({
+      files: files.map((f) => ({
         path: String(f.name || ''),
         sizeBytes: Number(f.size || 0),
         progress: round3(f.progress),
@@ -223,20 +224,28 @@ async function refreshNextFiles() {
  * @param {{magnet?: string, infoHash?: string, torrentBase64?: string}} input
  * @param {string} [savePath] qB 视角的保存目录
  */
-export function addTask(input, savePath) {
+export async function addTask(input, savePath) {
   const parsed = parseInput(input);
   if (!qb?.configured) {
     const err = new Error('还没有配置 qBittorrent。请先在设置页填写 qB 的地址，再添加下载。');
     err.statusCode = 503;
     throw err;
   }
-  if (records.has(parsed.hash)) {
+  if (records.has(parsed.hash) && !records.get(parsed.hash).error) {
     const err = new Error('该任务已在下载列表中');
     err.statusCode = 409;
     throw err;
   }
 
+  const stats = listTasks().stats;
+  const cap = capacityCheck(Number(input.sizeBytes) || 0, stats.totalSizeBytes, stats.remainingBytes);
+  if (!cap.ok || (cap.freeBytes >= 0 && cap.freeBytes < 1024 ** 3)) {
+    const err = new Error(cap.ok ? '磁盘可用空间不足 1 GB，请先清理空间' : cap.message);
+    err.statusCode = 413;
+    throw err;
+  }
   const record = {
+    estimatedSize: Math.max(0, Number(input.sizeBytes) || 0),
     id: parsed.hash,
     hash: parsed.hash,
     magnet: parsed.magnet,
@@ -252,8 +261,8 @@ export function addTask(input, savePath) {
   saveRecords();
   broadcast();
 
-  void submit(record, parsed);
-  return items.get(parsed.hash);
+  await submit(record, parsed);
+  return items.get(parsed.hash) || optimistic(record);
 }
 
 async function submit(record, parsed) {
@@ -277,6 +286,7 @@ async function submit(record, parsed) {
     log.error(`[engine] 提交到 qBittorrent 失败：${err.message}`);
     saveRecords();
     broadcast();
+    throw err;
   }
 }
 
@@ -290,7 +300,8 @@ export function listTasks() {
     completed: list.filter((t) => Number(t.progress || 0) >= 1 && t.state !== 'error').length,
     rateDown: list.reduce((sum, t) => sum + Number(t.rateDown || 0), 0),
     rateUp: list.reduce((sum, t) => sum + Number(t.rateUp || 0), 0),
-    totalSizeBytes: list.reduce((sum, t) => sum + Number(t.sizeBytes || 0), 0),
+    totalSizeBytes: list.reduce((sum, t) => sum + (t.state === 'error' ? 0 : Number(t.sizeBytes || 0)), 0),
+    remainingBytes: list.reduce((sum, t) => sum + (t.state === 'error' ? 0 : Math.max(0, Number(t.sizeBytes || 0) - Number(t.downloadedBytes || 0))), 0),
   };
   return { items: list, stats };
 }
@@ -308,45 +319,24 @@ export function resumeTask(id) {
 }
 
 /** 删除任务；deleteFiles 为真时同时删除 qB 那边磁盘上的文件。 */
-export function removeTask(id, deleteFiles = false) {
+export async function removeTask(id, deleteFiles = false) {
   const hash = String(id || '').toLowerCase();
-  const item = items.get(hash);
-  if (!item) return false;
-  const record = records.get(hash);
-  items.delete(hash);
-  records.delete(hash);
-  filesCache.delete(hash);
-  saveRecords();
-  broadcast();
-  if (!qb?.configured) return true;
-  void qb.deleteTorrents(hash, deleteFiles).then(() => pollOnce()).catch((err) => {
-    log.error(`[engine] 删除 qBittorrent 任务失败：${err.message}`);
-    if (record) {
-      record.error = err.message;
-      records.set(hash, record);
-      items.set(hash, { ...item, state: 'error', error: `删除失败：${err.message}` });
-      saveRecords();
-      broadcast();
-    }
-  });
+  if (!items.has(hash)) return false;
+  if (qb?.configured) await qb.deleteTorrents(hash, deleteFiles);
+  items.delete(hash); records.delete(hash); filesCache.delete(hash);
+  saveRecords(); broadcast();
   return true;
 }
 
-/** 乐观更新 + 异步下发；失败回滚成 error 状态，不让界面假装成功。 */
-function mutate(id, apply, call) {
+async function mutate(id, apply, call) {
   const hash = String(id || '').toLowerCase();
   const item = items.get(hash);
   if (!item) return null;
-  const next = apply(item);
-  items.set(hash, next);
-  broadcast();
-  if (!qb?.configured) return next;
-  void call(hash).then(() => pollOnce()).catch((err) => {
-    const current = items.get(hash) || item;
-    items.set(hash, { ...current, state: 'error', error: err.message });
-    log.error(`[engine] 操作 qBittorrent 失败：${err.message}`);
-    broadcast();
-  });
+  if (!qb?.configured) throw new Error('qBittorrent 未连接');
+  await call(hash);
+  const next = apply(items.get(hash) || item);
+  items.set(hash, next); broadcast();
+  void pollOnce();
   return next;
 }
 
@@ -405,7 +395,8 @@ function normalizeRecord(raw) {
     addedAt: String(raw.addedAt || new Date().toISOString()),
     addedOnMs: Number(raw.addedOnMs) || Date.now(),
     pending: false,
-    error: '',
+    estimatedSize: Number(raw.estimatedSize) || 0,
+    error: String(raw.error || ''),
   };
 }
 
@@ -418,6 +409,8 @@ function saveRecords() {
     savePath: record.savePath,
     addedAt: record.addedAt,
     addedOnMs: record.addedOnMs,
+    estimatedSize: record.estimatedSize || 0,
+    error: record.error || '',
   }));
   taskStore.save();
 }
@@ -429,7 +422,7 @@ function optimistic(record) {
     infoHash: record.hash,
     name: record.name || '正在提交到 qBittorrent…',
     magnet: record.magnet,
-    sizeBytes: 0,
+    sizeBytes: record.estimatedSize || 0,
     downloadedBytes: 0,
     progress: 0,
     state: record.error ? 'error' : 'queued',

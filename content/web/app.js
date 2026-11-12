@@ -318,6 +318,7 @@ async function cachedApi(path, ttlMs) {
   const hit = cachedPayload(path, ttlMs);
   if (hit) return hit;
   const payload = await api(path);
+  if (viewCache.size >= 80) viewCache.delete(viewCache.keys().next().value);
   viewCache.set(path, { at: Date.now(), payload: payload });
   return payload;
 }
@@ -515,6 +516,7 @@ function api(path, options) {
         const message = (data && typeof data === 'object' && data.error)
           || (typeof data === 'string' && data.trim())
           || ('请求失败（HTTP ' + response.status + '）');
+        if (data && data.code === 'AUTH_REQUIRED') { accessReady = false; stopLive(); showLogin(); }
         const error = new Error(message);
         error.status = response.status;
         error.data = data;
@@ -576,7 +578,7 @@ function errorEl(message) {
 }
 
 function emptyEl(text) {
-  return el('div', { class: 'notice notice--muted' }, el('p', { class: 'notice__text', text: String(text) }));
+  return el('div', { class: 'empty-state' }, [el('span', { class: 'empty-state__icon' }, iconNode('film')), el('p', { text: String(text) })]);
 }
 
 function skeletonCardsEl(count) {
@@ -737,6 +739,7 @@ function stashDisplayed(host) {
   if (!node || !displayedSignature) return;
   // 还在骨架屏（数据没到位）时不留：留着会把加载态还原回去
   if (node.querySelector('.sk')) return;
+  if (viewStash.size >= 12) viewStash.delete(viewStash.keys().next().value);
   viewStash.set(displayedSignature, {
     at: Date.now(),
     node: node,
@@ -753,6 +756,7 @@ function dropStash(prefix) {
 }
 
 function render() {
+  if (!accessReady) { showLogin(); return; }
   const route = parseRoute();
   const host = $('#view');
   if (!host) return;
@@ -801,7 +805,7 @@ function render() {
 /* 没有 TMDB Key 时不要去打 TMDB 接口：那会在浏览器控制台留下 4xx 报错，
    而这属于正常的首次使用状态，不是故障。这里统一改成先渲染引导，再让用户去设置。 */
 function tmdbReady() {
-  return Boolean(appState.settings && appState.settings.tmdbApiKey);
+  return Boolean(appState.settings && (appState.settings.tmdbApiKeySet || appState.settings.tmdbApiKey));
 }
 
 function tmdbKeyMissingEl(withRetry) {
@@ -829,22 +833,80 @@ function homeSkeletonEl() {
   return pageEl([one(), one()]);
 }
 
+let featuredIndex = 0;
+
+function featuredEl(items) {
+  if (!items.length) return null;
+  const item = items[featuredIndex % items.length];
+  const type = normalizeType(item.type);
+  const href = '#/detail/' + type + '/' + item.id;
+  const image = item.backdropPath ? el('img', {
+    class: 'feature__image', src: imageUrl(item.backdropPath, 'w780'), alt: '',
+    fetchpriority: 'high', decoding: 'async',
+  }) : null;
+  return el('section', { class: 'feature', 'aria-label': '精选推荐' }, [
+    image, el('div', { class: 'feature__veil' }),
+    el('div', { class: 'feature__content' }, [
+      el('div', { class: 'feature__eyebrow' }, [el('span', { class: 'feature__line' }), 'WANSPILOT 精选']),
+      el('div', { class: 'feature__meta' }, [
+        el('span', { text: typeLabel(item.type) }), el('span', { text: item.year || '' }),
+        item.voteAverage > 0 ? el('span', { class: 'feature__rating' }, [iconNode('star'), item.voteAverage.toFixed(1)]) : null,
+      ]),
+      el('h1', { class: 'feature__title', text: item.title || item.originalTitle }),
+      item.originalTitle && item.originalTitle !== item.title ? el('p', { class: 'feature__original', text: item.originalTitle }) : null,
+      el('p', { class: 'feature__overview', text: item.overview || '下一段值得沉浸的故事，从这里开始。' }),
+      el('div', { class: 'feature__actions' }, [
+        linkEl({ class: 'btn btn--primary', href: href }, 'play', '探索这部作品'),
+        linkEl({ class: 'btn feature__secondary', href: '#/resources/' + type + '/' + item.id + resourceQuery(item, item.year) }, 'search', '寻找资源'),
+      ]),
+    ]),
+    el('div', { class: 'feature__bottom' }, [
+      el('span', { class: 'feature__caption', text: '为下一场好戏，留一点时间。' }),
+      el('div', { class: 'feature__dots', role: 'group', 'aria-label': '切换精选作品' }, items.map(function (film, index) {
+        return el('button', { type: 'button', class: classNames('feature__dot', featuredIndex % items.length === index && 'is-active'),
+          'aria-label': '精选 ' + (index + 1) + '：' + film.title, 'aria-pressed': featuredIndex % items.length === index ? 'true' : 'false',
+          on: { click: function () { featuredIndex = index; const hero = document.querySelector('.feature'); if (hero) hero.replaceWith(featuredEl(items)); } },
+        });
+      })),
+    ]),
+  ]);
+}
+
 function homeBlocksEl(data) {
   const blocks = data && Array.isArray(data.blocks) ? data.blocks : [];
-  if (!blocks.length) {
-    return pageEl(emptyEl('影视墙暂时没有内容。请先在设置里填写 TMDB API Key。'));
-  }
-  return pageEl(blocks.map(function (block) {
-    const type = block.type === 'movie' ? 'movie' : (block.type === 'anime' ? 'anime' : 'tv');
-    const category = String(block.id || '').indexOf('top') >= 0 ? 'top_rated' : 'popular';
-    const items = Array.isArray(block.items) ? block.items : [];
-    const body = items.length
-      ? railEl(items.map(function (item) { return mediaCardEl(item, { type: type }); }))
-      : emptyEl('这个区块暂时没有内容');
-    return blockEl(block.title || '影视区块', body,
-      blockMoreEl('#/search?type=' + encodeURIComponent(type)
-        + '&category=' + encodeURIComponent(category), '查看全部'));
-  }));
+  if (!blocks.length) return pageEl(emptyEl('影视墙暂时没有内容。请先在设置里填写 TMDB API Key。'));
+  const featured = [];
+  const seen = new Set();
+  blocks.forEach(function (block) {
+    const item = (block.items || []).find(function (film) { return film.backdropPath && !seen.has(film.type + ':' + film.id); });
+    if (item && featured.length < 5) { featured.push(item); seen.add(item.type + ':' + item.id); }
+  });
+  const page = pageEl([
+    featuredEl(featured),
+    el('div', { class: 'discovery-head' }, [
+      el('div', {}, [el('span', { class: 'eyebrow', text: 'DISCOVER SOMETHING GREAT' }), el('h2', { text: '发现你的下一部挚爱' })]),
+      linkEl({ class: 'discovery-search', href: '#/search' }, 'search', '搜索电影、剧集、动漫…'),
+    ]),
+    el('nav', { class: 'discovery-links', 'aria-label': '快速探索' }, [
+      linkEl({ href: '#/search?type=movie&category=popular' }, 'film', '热门电影'),
+      linkEl({ href: '#/search?type=tv&category=popular' }, 'tv', '人气剧集'),
+      linkEl({ href: '#/search?type=anime' }, 'star', '动画世界'),
+      linkEl({ href: '#/search?type=movie&category=top_rated' }, 'bookmark', '高分佳作'),
+    ]),
+    blocks.map(function (block, index) {
+      const type = block.type === 'movie' ? 'movie' : (block.type === 'anime' ? 'anime' : 'tv');
+      const category = String(block.id || '').indexOf('top') >= 0 ? 'top_rated' : 'popular';
+      const items = Array.isArray(block.items) ? block.items : [];
+      const body = items.length ? railEl(items.map(function (item) { return mediaCardEl(item, { type: type }); })) : emptyEl('这个区块暂时没有内容');
+      const section = blockEl(block.title || '影视区块', body,
+        blockMoreEl('#/search?type=' + encodeURIComponent(type) + '&category=' + encodeURIComponent(category), '探索更多'));
+      section.dataset.collection = String(index + 1).padStart(2, '0');
+      return section;
+    }),
+    el('footer', { class: 'cinema-footer' }, [el('span', { text: 'WansPilot' }), el('span', { text: '好故事，永不落幕。' }), linkEl({ href: '#/health' }, 'activity', '系统状态')]),
+  ]);
+  page.classList.add('page--home');
+  return page;
 }
 
 async function viewHome(ctx) {
@@ -1449,7 +1511,7 @@ async function viewHealth(ctx) {
   fill(ctx.host, pageEl([
     el('header', { class: 'page__head' }, el('div', {}, [
       el('h1', { text: '运行状况' }),
-      el('p', { class: 'page__sub', text: 'TMDB、索引源、磁盘、任务与 AI 一页看全。' }),
+      el('p', { class: 'page__sub', text: 'TMDB、索引源、磁盘和下载任务，一目了然。' }),
     ])),
     gridEl(skeletonCardsEl(6), 'grid--cards'),
   ]));
@@ -1482,7 +1544,7 @@ async function viewHealth(ctx) {
       return [source.name, source.ok ? '可用 · ' + source.latencyMs + ' ms' : '不可用 · ' + (source.message || '')];
     }).concat([['代理', (getSettingsCached() && getSettingsCached().proxy) ? '已配置' : '未配置']]), (report.sources || []).every(function (s) { return s.ok; }) ? 'ok' : 'warn'),
     card('磁盘', [
-      ['剩余', fmtBytes(cap.freeBytes || 0)],
+      ['剩余', cap.freeBytes < 0 ? '等待上报' : fmtBytes(cap.freeBytes)],
       ['配额上限', cap.quotaGB ? cap.quotaGB + ' GB' : '不限'],
       ['下载目录', cap.downloadDir || ''],
     ]),
@@ -1766,6 +1828,7 @@ async function viewResources(ctx) {
     let body = null;
     if (item.magnet) body = { magnet: item.magnet };
     else if (item.infoHash) body = { infoHash: item.infoHash };
+    if (body) body.sizeBytes = Number(item.sizeBytes) || 0;
     if (!body) {
       toast('这条资源既没有磁力链接也没有 infoHash', 'error');
       button.disabled = false;
@@ -2028,7 +2091,7 @@ async function viewTasks(ctx) {
     el('header', { class: 'page__head' }, [
       el('div', {}, [
         el('h1', { text: '下载任务' }),
-        el('p', { class: 'page__sub', text: '进度实时推送，断开后自动重连并在连续失败时降级为轮询。' }),
+        el('p', { class: 'page__sub', text: '每一次进度，都离下一场好戏更近。' }),
       ]),
       el('div', { class: 'page__actions' }, [
         buttonEl({ class: 'btn btn--primary', 'data-action': 'import' }, 'plus', '导入任务'),
@@ -2315,10 +2378,10 @@ function calendarItemEl(item) {
   }));
   // 片名不再挤在海报下面（会截成「安迪·科…」），改成悬停提示里完整给出
   return el('a', {
-    class: classNames('cal__item', done ? 'is-done' : 'is-missing'),
+    class: classNames('cal__item', done ? 'is-done' : (item.status === 'downloading' ? 'is-downloading' : 'is-missing')),
     href: '#/detail/' + type + '/' + (item.tmdbId || ''),
     title: item.title + ' · ' + label + (item.episodeName ? ' ' + item.episodeName : '')
-      + (done ? ' · 已下载' : ' · 缺这一集'),
+      + (done ? ' · 已下载' : (item.status === 'downloading' ? ' · 下载中' : ' · 缺这一集')),
   }, poster);
 }
 
@@ -2375,6 +2438,7 @@ async function loadCalendar() {
   }, null, '今天');
   const legend = el('span', { class: 'cal__legend' }, [
     el('i', { class: 'cal__dot is-done' }), '已下载',
+    el('i', { class: 'cal__dot is-downloading' }), '下载中',
     el('i', { class: 'cal__dot is-missing' }), '缺这一集',
   ]);
   fill(nav, [
@@ -2467,7 +2531,7 @@ function moreIconNode() {
 
 /** 订阅就只显示海报：片名一行 + 状态，其余信息与按钮在右击菜单里。 */
 function subCardEl(item) {
-  const state = SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' };
+  const state = item.pendingKeys?.length ? { label: '下载中 · ' + item.pendingKeys.length, kind: 'info' } : (SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' });
   const type = item.type === 'movie' ? 'movie' : 'tv';
   const more = buttonEl({
     class: 'sub-card__more',
@@ -2495,7 +2559,7 @@ function subCardEl(item) {
 /** 右击（或在触屏上点三个点）弹出的订阅操作菜单：按钮都在这里，平时不占地方。 */
 function openSubMenu(item, event) {
   closeSubMenu();
-  const state = SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' };
+  const state = item.pendingKeys?.length ? { label: '下载中 · ' + item.pendingKeys.length, kind: 'info' } : (SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' });
   const type = item.type === 'movie' ? 'movie' : 'tv';
   const seasons = Array.isArray(item.seasons) && item.seasons.length
     ? '第 ' + item.seasons.join('、') + ' 季'
@@ -2939,13 +3003,14 @@ function settingsFormEl(settings, highlightKey) {
           el('span', { class: 'secret' }, [
             inputEl('password', {
               id: 'set-tmdb-key', name: 'tmdbApiKey', autocomplete: 'off', spellcheck: 'false',
-              value: settings.tmdbApiKey || '', placeholder: 'TMDB 账号设置里的 API Key（v3 auth）',
+              value: settings.tmdbApiKey || '', placeholder: settings.tmdbApiKeySet ? '已配置 · 留空保留，输入新值替换' : 'TMDB API Key（v3 auth）',
             }),
             buttonEl({
               class: 'btn btn--sm', 'data-action': 'toggle-key', 'aria-label': '显示或隐藏 API Key',
             }, null, '显示'),
           ]),
-          hintEl('留空表示不使用 TMDB，影视墙、搜索与详情页都会失效。'),
+          hintEl('密钥不会回传浏览器。留空保留已有密钥。'),
+          switchEl(checkboxEl({ name: 'clearTmdbKey' }), '清除已保存的 TMDB Key'),
         ]),
         el('label', { class: 'field field--full' }, [
           el('span', { class: 'field__label', text: 'TMDB 接口地址' }),
@@ -2990,9 +3055,10 @@ function settingsFormEl(settings, highlightKey) {
         ]),
         el('label', { class: 'field' }, [
           el('span', { class: 'field__label', text: '密码' }),
-          inputEl('password', { name: 'qbPassword', autocomplete: 'new-password', value: settings.qbPassword || '' }),
+          inputEl('password', { name: 'qbPassword', autocomplete: 'new-password', value: '', placeholder: settings.qbPasswordSet ? '已配置 · 留空保留' : '填写 qB 密码' }),
         ]),
       ]),
+      switchEl(checkboxEl({ name: 'clearQbPassword' }), '清除已保存的 qB 密码'),
       el('p', { class: 'field__hint', text: 'qB 开了「本地主机跳过认证」时，用户名和密码都可以留空。' }),
       el('div', { class: 'form-grid' }, [
         el('label', { class: 'field' }, [
@@ -3054,18 +3120,20 @@ function settingsFormEl(settings, highlightKey) {
         ]),
       ]),
       switchEl(checkboxEl({ name: 'autoOrganize', checked: settings.autoOrganize ? true : null }),
-        '下载完成后按「片名 (年份)/」归档'),
+        '下载完成后硬链接归档，跨盘保留原件复制，不影响做种'),
       switchEl(checkboxEl({ name: 'writeNfo', checked: settings.writeNfo ? true : null }),
         '同时写 .nfo 与海报，Jellyfin / Emby 可直接识别'),
       switchEl(checkboxEl({ name: 'deleteSamples', checked: settings.deleteSamples === false ? null : true }),
-        '整理时清掉样本文件'),
+        '整理时跳过样本文件（保留 qB 原文件）'),
       el('div', { class: 'row row--wrap' }, [
-        buttonEl({ class: 'btn', 'data-action': 'organize-now' }, 'folder-plus', '立即整理已完成的任务'),
+        buttonEl({ class: 'btn', 'data-action': 'organize-preview' }, 'folder', '预览整理'),
+        buttonEl({ class: 'btn', 'data-action': 'organize-now' }, 'folder-plus', '整理已完成的任务'),
         el('span', { class: 'field__hint', id: 'organize-result' }),
       ]),
     ]),
 
     el('div', { class: 'settings__savebar' }, [
+      el('span', { class: 'save-state', id: 'save-state', role: 'status', text: '所有更改已保存' }),
       buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '保存设置'),
       buttonEl({ class: 'btn', 'data-action': 'reload' }, null, '重新载入'),
       linkEl({ class: 'btn btn--ghost', href: '#/health' }, 'activity', '运行状况'),
@@ -3093,28 +3161,42 @@ const SELFTEST_TTL_MS = 60 * 1000;
 
 async function viewSettings(ctx) {
   const focusKey = ctx.route.params.get('focus') === 'key';
-  const cachedSettings = appState.settings || cachedPayload('/settings');
-  paintSettings(ctx, cachedSettings || {}, cachedPayload('/settings/status', SELFTEST_TTL_MS) || undefined,
-    cachedPayload('/system'), focusKey, true);
-
-  const [settingsRes, statusRes, systemRes] = await Promise.allSettled([
-    cachedApi('/settings'),
-    cachedApi('/settings/status', SELFTEST_TTL_MS),
-    cachedApi('/system'),
+  let settings = appState.settings || cachedPayload('/settings');
+  if (!settings) {
+    fill(ctx.host, pageEl(loadingEl('正在读取设置…')));
+    settings = await api('/settings');
+  }
+  appState.settings = settings;
+  settingsCache = settings;
+  paintSettings(ctx, settings, settingsStatus, cachedPayload('/system'), focusKey, true);
+  const form = $('#settings-form');
+  const [statusRes, systemRes] = await Promise.allSettled([
+    cachedApi('/settings/status', SELFTEST_TTL_MS), cachedApi('/system'),
   ]);
-  const settings = settingsRes.status === 'fulfilled' && settingsRes.value
-    ? settingsRes.value
-    : (appState.settings || {});
-  if (settingsRes.status === 'fulfilled' && settingsRes.value) appState.settings = settingsRes.value;
-  settingsCache = appState.settings || null;
-  paintSettings(ctx, settings, statusRes.status === 'fulfilled' ? statusRes.value : null,
-    systemRes.status === 'fulfilled' ? systemRes.value : null, focusKey, false);
+  if (!form || $('#settings-form') !== form) return;
+  if (statusRes.status === 'fulfilled') {
+    settingsStatus = statusRes.value;
+    const host = $('#settings-status');
+    if (host) host.replaceWith(statusBlockEl(settingsStatus, false));
+  }
+  const systemHost = $('#settings-system');
+  if (systemHost && systemRes.status === 'fulfilled') {
+    const sys = systemRes.value;
+    const kv = systemHost.querySelector('.kv');
+    const content = el('div', { class: 'kv' }, [
+      kvRowEl('版本', sys.version || '未知'), kvRowEl('Node', sys.nodeVersion || ''),
+      kvRowEl('数据目录', sys.dataDir || ''), kvRowEl('下载目录', sys.downloadDir || '未挂载'),
+      kvRowEl('剩余空间', sys.freeBytes < 0 ? '等待 qB 上报' : fmtBytes(sys.freeBytes)),
+      kvRowEl('已运行', fmtUptime(sys.uptimeSeconds)), kvRowEl('下载引擎', sys.engineReady ? '就绪' : '未就绪'),
+    ]);
+    if (kv) kv.replaceWith(content); else { const old = systemHost.lastElementChild; if (old?.className !== 'panel__head') old?.remove(); systemHost.append(content); }
+  }
 }
 
 /** 画设置页（表单 + 自检 + 系统信息 + 日志），并绑好这一份 DOM 上的处理函数。 */
 function paintSettings(ctx, settings, status, system, focusKey, pending) {
   settingsStatus = status === undefined ? settingsStatus : status;
-  const keyMissing = !settings.tmdbApiKey;
+  const keyMissing = !(settings.tmdbApiKeySet || settings.tmdbApiKey);
   const highlightKey = focusKey || keyMissing;
 
   // 分区优先级：聚焦 TMDB Key > 地址栏 ?tab= > 上次停留的分区
@@ -3136,7 +3218,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     ])
     : null;
 
-  const systemBlock = el('div', { class: 'panel' }, [
+  const systemBlock = el('div', { class: 'panel', id: 'settings-system' }, [
     el('div', { class: 'panel__head' }, el('h2', { class: 'panel__title', text: '系统信息' })),
     system
       ? el('div', { class: 'kv' }, [
@@ -3183,8 +3265,12 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   ]));
 
   const form = $('#settings-form');
+  restoreSettingsDraft(form);
+  form.addEventListener('input', function () { settingsDirty = true; captureSettingsDraft(form); updateSaveState('有未保存的更改'); });
+  form.addEventListener('change', function () { settingsDirty = true; captureSettingsDraft(form); updateSaveState('有未保存的更改'); });
   form.addEventListener('submit', async function (event) {
     event.preventDefault();
+    if (form.dataset.saving) return;
     const message = $('#settings-message');
     message.hidden = true;
     const body = {
@@ -3208,26 +3294,45 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
       checkIntervalMinutes: Number(form.elements.checkIntervalMinutes.value) || 0,
       autoDownload: form.elements.autoDownload.checked
     };
+    if (!body.tmdbApiKey) delete body.tmdbApiKey;
+    if (!body.qbPassword) delete body.qbPassword;
+    if (form.elements.clearTmdbKey.checked) body.tmdbApiKey = '';
+    if (form.elements.clearQbPassword.checked) body.qbPassword = '';
+    form.dataset.saving = '1';
+    form.inert = true;
+    const saveButton = form.querySelector('[type="submit"]');
+    saveButton.disabled = true;
+    updateSaveState('正在保存…');
     try {
       const saved = await api('/settings', { method: 'PUT', body: body });
       appState.settings = saved || body;
-      dropStash();
+      settingsCache = appState.settings;
+      settingsDirty = false; settingsDraft = null;
+      form.elements.tmdbApiKey.value = ''; form.elements.qbPassword.value = '';
+      form.elements.clearTmdbKey.checked = false; form.elements.clearQbPassword.checked = false;
+      form.elements.tmdbApiKey.placeholder = saved.tmdbApiKeySet ? '已配置 · 留空保留，输入新值替换' : '填写 TMDB API Key';
+      form.elements.qbPassword.placeholder = saved.qbPasswordSet ? '已配置 · 留空保留' : '填写 qB 密码';
+      updateSaveState('所有更改已保存');
+      dropStash(); viewCache.delete('/settings'); viewCache.delete('/settings/status'); viewCache.delete('/tmdb/home');
       toast('设置已保存', 'ok');
-      try {
-        settingsStatus = await api('/settings/status');
+      api('/settings/status').then(function (status) {
+        settingsStatus = status;
+        if ($('#settings-form') !== form) return;
         const host = $('#settings-status');
-        if (host) host.replaceWith(statusBlockEl(settingsStatus, false));
-      } catch (error) {
-        toast('设置已保存，但自检失败：' + error.message, 'error');
-      }
+        if (host) host.replaceWith(statusBlockEl(status, false));
+      }).catch(function (error) { toast('设置已保存，但自检失败：' + error.message, 'error'); });
     } catch (error) {
       message.hidden = false;
       message.className = 'notice notice--err';
       message.textContent = '保存失败：' + error.message;
-    }
+      updateSaveState('保存失败 · 更改已保留');
+    } finally { delete form.dataset.saving; form.inert = false; saveButton.disabled = false; }
   });
 
-  currentActions.reload = function () { render(); };
+  currentActions.reload = function () {
+    if (settingsDirty && !confirm('重新载入会丢弃未保存的更改，继续吗？')) return;
+    settingsDraft = null; settingsDirty = false; render();
+  };
   /* 分区切换：只动 class，不重绘整页，避免表单里已输入的内容被冲掉。 */
   currentActions['settings-tab'] = function (button) {
     const target = button && button.getAttribute('data-target');
@@ -3269,7 +3374,8 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
           kind: 'qb',
           qbUrl: String(form.elements.qbUrl.value || '').trim(),
           qbUsername: String(form.elements.qbUsername.value || '').trim(),
-          qbPassword: String(form.elements.qbPassword.value || ''),
+          ...(form.elements.qbPassword.value ? { qbPassword: String(form.elements.qbPassword.value) } : {}),
+          ...(form.elements.clearQbPassword.checked ? { qbPassword: '' } : {}),
         },
       });
       if (hint) hint.textContent = (result.ok ? '✓ ' : '✗ ') + (result.message || '');
@@ -3282,6 +3388,11 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   currentActions.test = async function (button) {
     const kind = button.getAttribute('data-kind') || 'tmdb';
     const body = { kind: kind };
+    const form = $('#settings-form');
+    if (form) {
+      for (const key of ['tmdbApiBase', 'tmdbImageBase', 'proxy']) body[key] = String(form.elements[key].value || '').trim();
+      if (form.elements.tmdbApiKey.value || form.elements.clearTmdbKey.checked) body.tmdbApiKey = String(form.elements.tmdbApiKey.value || '').trim();
+    }
     const sourceId = button.getAttribute('data-id');
     if (sourceId) body.id = sourceId;
     button.disabled = true;
@@ -3290,13 +3401,31 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
       settingsStatus = Object.assign({}, settingsStatus || {}, result || {});
       const host = $('#settings-status');
       if (host) host.replaceWith(statusBlockEl(settingsStatus));
-      toast('测试完成', 'ok');
+      const failed = result.tmdbOk === false || result.tmdbImageOk === false;
+      toast(failed ? '测试完成，请查看未通过的项目' : '测试通过', failed ? 'error' : 'ok');
     } catch (error) {
       toast(error.message, 'error');
+    } finally {
       if (document.contains(button)) button.disabled = false;
     }
   };
-  currentActions['organize-now'] = async function () {
+  currentActions['organize-preview'] = async function (button) {
+    button.disabled = true;
+    try {
+      const result = await api('/organizer/preview', { timeoutMs: 180000 });
+      const reports = result.reports || [];
+      openModal({ title: '整理预览 · 原文件完整保留', body: el('div', { class: 'preview-list' }, reports.length ? reports.map(function (report) {
+        return el('section', { class: 'panel' }, [el('h3', { text: report.name || '任务' }),
+          el('p', { class: 'page__sub', text: report.skipped || ('计划归档 ' + report.planned.length + ' 个文件，已归档 ' + report.existing + ' 个') }),
+          report.planned.map(function (file) { return el('div', { class: 'preview-file' }, [el('span', { text: file.source }), el('span', { text: '→ ' + file.target })]); }),
+          report.errors.map(function (error) { return el('p', { class: 'task__error', text: error }); }),
+        ]);
+      }) : emptyEl('暂无已完成的下载任务。')) });
+    } catch (error) { toast(error.message, 'error'); }
+    finally { if (document.contains(button)) button.disabled = false; }
+  };
+  currentActions['organize-now'] = async function (button) {
+    if (button) button.disabled = true;
     const hint = $('#organize-result');
     if (hint) hint.textContent = '正在整理…';
     try {
@@ -3304,12 +3433,14 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
       const reports = (data && data.reports) || [];
       const moved = reports.reduce(function (sum, item) { return sum + (item.moved || 0); }, 0);
       const skipped = reports.filter(function (item) { return item.skipped; }).length;
-      if (hint) hint.textContent = '整理完成：移动 ' + moved + ' 个文件' + (skipped ? '，' + skipped + ' 个任务跳过' : '');
-      toast('整理完成', 'ok');
+      if (hint) hint.textContent = '整理完成：归档 ' + moved + ' 个文件' + (skipped ? '，' + skipped + ' 个任务跳过' : '');
+      const errors = reports.reduce(function (n, report) { return n + (report.errors || []).length; }, 0);
+      toast(errors ? '部分文件整理失败，请查看日志' : '整理完成，原文件已保留', errors ? 'error' : 'ok');
     } catch (error) {
       if (hint) hint.textContent = error.message;
       toast(error.message, 'error');
     }
+    finally { if (button && document.contains(button)) button.disabled = false; }
   };
   currentActions['load-logs'] = async function (button) {
     const pre = $('#logs');
@@ -3769,6 +3900,10 @@ function bindGlobalEvents() {
     }
   });
   window.addEventListener('hashchange', render);
+  document.addEventListener('keydown', function (event) {
+    if (!accessReady || event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || event.target.isContentEditable) return;
+    event.preventDefault(); navigate('#/search');
+  });
 
   $('#view').addEventListener('click', function (event) {
     const trigger = event.target.closest('[data-action]');
@@ -3797,7 +3932,7 @@ function routeFirstLoad(openFile) {
   const hash = location.hash;
   const atHome = !hash || hash === '#' || hash === '#/' || hash === '#/home';
   if (!atHome) return;
-  if (appState.settings && !appState.settings.tmdbApiKey) {
+  if (appState.settings && !(appState.settings.tmdbApiKeySet || appState.settings.tmdbApiKey)) {
     // 首次打开且没有 TMDB Key 时，把用户带到设置页填写；其它深链接不劫持。
     go('#/settings?focus=key');
     return;
@@ -3863,6 +3998,19 @@ function toggleTheme() {
 
 async function boot() {
   bindGlobalEvents();
+  document.querySelector('#logout-button')?.addEventListener('click', async function () {
+    await api('/auth/logout', { method: 'POST' });
+    location.reload();
+  });
+  const auth = await api('/auth/status');
+  accessMode = auth.mode || 'token';
+  if (!auth.authenticated) { showLogin(); return; }
+  accessReady = true;
+  document.body.classList.remove('is-locked');
+  await startApp();
+}
+
+async function startApp() {
   const openFile = takeOpenFileParam();
   try {
     appState.settings = await api('/settings');
@@ -3880,6 +4028,71 @@ async function boot() {
   }
 }
 
+let accessReady = false;
+let accessMode = 'token';
+let settingsDirty = false;
+let settingsDraft = null;
+
+function captureSettingsDraft(form) {
+  settingsDraft = {};
+  Array.from(form.elements).forEach(function (input) {
+    if (input.name) settingsDraft[input.name] = input.type === 'checkbox' ? input.checked : input.value;
+  });
+}
+function restoreSettingsDraft(form) {
+  if (!settingsDraft) return;
+  Object.keys(settingsDraft).forEach(function (name) {
+    const input = form.elements[name];
+    if (!input) return;
+    if (input.type === 'checkbox') input.checked = settingsDraft[name]; else input.value = settingsDraft[name];
+  });
+  updateSaveState('有未保存的更改');
+}
+function updateSaveState(text) {
+  const node = $('#save-state');
+  if (node) { node.textContent = text; node.classList.toggle('is-dirty', settingsDirty); }
+}
+window.addEventListener('beforeunload', function (event) {
+  if (settingsDirty) { event.preventDefault(); event.returnValue = ''; }
+});
+
+function showLogin() {
+  if (document.querySelector('#access-form')) return;
+  ++renderToken;
+  document.body.classList.add('is-locked');
+  document.title = '欢迎回来 · WansPilot';
+  const accountMode = accessMode === 'password';
+  const userInput = el('input', { name: 'username', id: 'access-username', autocomplete: 'username', required: true, placeholder: '输入账号' });
+  const input = el('input', { name: 'token', type: 'password', autocomplete: 'current-password', required: true, placeholder: accountMode ? '输入密码' : '输入你的访问令牌', id: 'access-token' });
+  const note = el('p', { class: 'access__error', role: 'alert' });
+  const submit = buttonEl({ type: 'submit', class: 'btn btn--primary' }, 'arrow-right', '进入 WansPilot');
+  const form = el('form', { id: 'access-form', class: 'access__card' }, [
+    el('img', { src: './logo-mark.png', width: '54', height: '54', alt: 'WansPilot', class: 'access__logo' }),
+    el('span', { class: 'eyebrow', text: 'YOUR PERSONAL CINEMA' }),
+    el('h1', { text: '好故事，值得期待。' }),
+    el('p', { class: 'access__intro', text: '发现心动的电影，让每一集如期而至。' }),
+    accountMode ? el('label', { class: 'field' }, [el('span', { class: 'field__label', text: '账号' }), userInput]) : null,
+    el('label', { class: 'field' }, [el('span', { class: 'field__label', text: accountMode ? '密码' : '访问令牌' }), input]), note, submit,
+    accountMode ? el('p', { class: 'field__hint', text: '使用部署 YAML 中 WP_USERNAME 和 WP_PASSWORD 设置的账号密码登录。' }) : el('details', { class: 'access__help' }, [el('summary', { text: '首次使用，如何获取令牌？' }),
+      el('p', { text: '在 NAS 的终端执行以下命令，复制令牌后登录。令牌只保存在你的数据目录中。' }),
+      el('code', { text: 'docker exec wanspilot cat /data/access-token' }),
+      el('p', { text: '也可以通过 WP_ACCESS_TOKEN 环境变量设置自己的令牌（至少 16 个字符）。' }),
+    ]),
+    el('span', { class: 'access__footer', text: 'WansPilot · 你的私人影视空间' }),
+  ]);
+  fill($('#view'), el('div', { class: 'access' }, form));
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault(); submit.disabled = true; note.textContent = '';
+    try {
+      await api('/auth/login', { method: 'POST', body: accountMode ? { username: userInput.value.trim(), password: input.value } : { token: input.value.trim() } });
+      input.value = ''; accessReady = true; document.body.classList.remove('is-locked');
+      viewStash.clear(); settingsDraft = null; settingsDirty = false;
+      await startApp();
+    } catch (error) { note.textContent = error.message; submit.disabled = false; }
+  });
+  (accountMode ? userInput : input).focus({ preventScroll: true });
+}
+
 const VIEWS = {
   home: viewHome,
   search: viewSearch,
@@ -3892,4 +4105,4 @@ const VIEWS = {
   settings: viewSettings
 };
 
-boot();
+boot().catch(function (error) { fill($('#view'), pageEl(errorEl(error.message))); });

@@ -8,10 +8,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { initAuth, authMode, authenticated, sameOrigin, login, logoutCookie } from './auth.mjs';
 import { log, initLog, tail } from './log.mjs';
 import {
   DATA_DIR,
+  CACHE_DIR,
   getSettings,
+  publicSettings,
+  flushSettings,
   initSettings,
   updateSettings,
   downloadDirStatus,
@@ -19,6 +23,7 @@ import {
 } from './settings.mjs';
 import { clientFromSettings } from './qbittorrent.mjs';
 import * as tmdb from './tmdb.mjs';
+import { pruneImageCache } from './image-cache.mjs';
 import { searchResources, sourcesStatus } from './sources.mjs';
 import { capacityCheck, capacityStatus } from './capacity.mjs';
 import { initOrganizer, organizeAll, organizerStatus } from './organizer.mjs';
@@ -50,6 +55,7 @@ import {
   startScheduler,
   promoteUpgrade,
   dismissUpgrade,
+  shutdownSubscriptions,
 } from './subscriptions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,8 +68,8 @@ const WEB_DIR = path.resolve(__dirname, '..', 'web');
  * 其次读平台放在容器里的 package.yml，最后回退到未知。
  */
 function resolveVersion() {
+  if (process.env.WP_VERSION) return process.env.WP_VERSION;
   const candidates = [
-    process.env.WP_VERSION,
     new URL('../version.json', import.meta.url),
     '/lzcapp/pkg/package.yml',
   ];
@@ -123,12 +129,12 @@ function sendText(res, status, text, contentType = 'text/plain; charset=utf-8') 
   res.end(body);
 }
 
-async function readBody(req) {
+async function readBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       const err = new Error('请求体过大');
       err.statusCode = 413;
       throw err;
@@ -161,7 +167,8 @@ function serveStatic(req, res, urlPath) {
 
   fs.stat(target, (err, st) => {
     if (err || !st.isFile()) {
-      // 单页应用：未知路径一律回落到 index.html，保证 hash 路由刷新可用
+      if (path.extname(rel)) { sendText(res, 404, '资源不存在'); return; }
+      // 导航路径回落到 index.html，缺失的脚本/样式明确返回 404
       const fallback = path.join(WEB_DIR, 'index.html');
       fs.readFile(fallback, (e2, buf) => {
         if (e2) {
@@ -177,8 +184,10 @@ function serveStatic(req, res, urlPath) {
     const headers = {
       'content-type': MIME_TYPES[ext] || 'application/octet-stream',
       'content-length': st.size,
-      'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+      'cache-control': ext === '.html' ? 'no-store' : ['.js', '.mjs', '.css'].includes(ext) ? 'no-cache' : 'public, max-age=3600',
+      etag: `W/"${st.size}-${Math.floor(st.mtimeMs)}"`,
     };
+    if (req.headers['if-none-match'] === headers.etag) { res.writeHead(304, { etag: headers.etag, 'cache-control': headers['cache-control'] }); res.end(); return; }
     res.writeHead(200, headers);
     if (req.method === 'HEAD') {
       res.end();
@@ -197,8 +206,27 @@ async function handleApi(req, res, url) {
 
   // 健康检查：不鉴权，供容器探针使用
   if (pathname === '/api/health') {
-    sendJson(res, 200, { status: 'ok', version: VERSION });
+    sendJson(res, 200, { status: 'ok', version: VERSION, build: process.env.WP_BUILD_SHA || 'source' });
     return true;
+  }
+
+  if (pathname === '/api/auth/status' && method === 'GET') {
+    sendJson(res, 200, { authenticated: authenticated(req), required: true, mode: authMode() });
+    return true;
+  }
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    if (!sameOrigin(req)) { sendJson(res, 403, { error: '不允许跨站登录' }); return true; }
+    const body = await readBody(req, 4096);
+    const result = login(req, body);
+    sendJson(res, result.status, result.error ? { error: result.error } : { ok: true }, result.cookie ? { 'set-cookie': result.cookie } : {});
+    return true;
+  }
+  if (!authenticated(req)) { sendJson(res, 401, { error: '请先登录 WansPilot', code: 'AUTH_REQUIRED' }); return true; }
+  if (!['GET', 'HEAD'].includes(method) && !sameOrigin(req)) {
+    sendJson(res, 403, { error: '不允许跨站修改数据' }); return true;
+  }
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    sendJson(res, 200, { ok: true }, { 'set-cookie': logoutCookie() }); return true;
   }
 
   if (pathname === '/api/system') {
@@ -239,6 +267,9 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/organizer/status' && method === 'GET') {
     sendJson(res, 200, organizerStatus());
     return true;
+  }
+  if (pathname === '/api/organizer/preview' && method === 'GET') {
+    sendJson(res, 200, await organizeAll({ dryRun: true })); return true;
   }
   if (pathname === '/api/organizer/run' && method === 'POST') {
     sendJson(res, 200, await organizeAll());
@@ -283,7 +314,7 @@ async function handleApi(req, res, url) {
   /* ---- 设置 ---- */
   if (pathname === '/api/settings') {
     if (method === 'GET') {
-      sendJson(res, 200, getSettings());
+      sendJson(res, 200, publicSettings());
       return true;
     }
     if (method === 'PUT' || method === 'POST') {
@@ -294,7 +325,7 @@ async function handleApi(req, res, url) {
       } catch (err) {
         log.warn(`[app] 下载引擎重载失败: ${err.message}`);
       }
-      sendJson(res, 200, saved);
+      sendJson(res, 200, publicSettings());
       return true;
     }
   }
@@ -317,12 +348,12 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (body.kind === 'qb') {
       // 传了地址就用页面上的值试连，否则用已保存的设置
-      const probe = body.qbUrl
+      const probe = Object.hasOwn(body, 'qbUrl')
         ? {
             ...getSettings(),
             qbUrl: body.qbUrl,
             qbUsername: body.qbUsername ?? '',
-            qbPassword: body.qbPassword ?? '',
+            qbPassword: body.qbPassword ?? getSettings().qbPassword,
           }
         : getSettings();
       try {
@@ -350,20 +381,17 @@ async function handleApi(req, res, url) {
       return true;
     }
     if (body.kind === 'source') {
-      const all = await sourcesStatus();
+      const all = await sourcesStatus(body.id);
       sendJson(res, 200, { sources: all, downloadDirOk: downloadDirStatus().ok, engineReady: engineReady() });
       return true;
     }
-    const [tmdbStatus, sourceStatus] = await Promise.all([tmdb.tmdbStatus(), sourcesStatus()]);
-    const dirStatus = downloadDirStatus();
-    sendJson(res, 200, {
-      ...tmdbStatus,
-      downloadDirOk: dirStatus.ok,
-      downloadDirMessage: dirStatus.message,
-      engineReady: engineReady(),
-      sources: sourceStatus,
-      qbUrl: getSettings().qbUrl || '',
-    });
+    const current = getSettings();
+    const probe = { ...current };
+    for (const key of ['tmdbApiKey', 'tmdbApiBase', 'tmdbImageBase', 'proxy']) {
+      if (typeof body[key] === 'string') probe[key] = body[key].trim();
+    }
+    const tmdbStatus = await tmdb.tmdbStatus(probe);
+    sendJson(res, 200, { ...tmdbStatus, testedDraft: true });
     return true;
   }
 
@@ -450,13 +478,13 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/tasks' && method === 'POST') {
     const body = await readBody(req);
     const stats = (listTasks().stats) || {};
-    const cap = capacityCheck(0, Number(stats.totalSizeBytes) || 0);
+    const cap = capacityCheck(Number(body.sizeBytes) || 0, Number(stats.totalSizeBytes) || 0, Number(stats.remainingBytes) || 0);
     // 体积要等拿到元数据才知道，这里只挡住「连 1 GB 都没有」的情况
-    if (cap.freeBytes > 0 && cap.freeBytes < 1024 ** 3) {
+    if (!cap.ok || (cap.freeBytes >= 0 && cap.freeBytes < 1024 ** 3)) {
       sendJson(res, 413, { error: cap.message });
       return true;
     }
-    const task = addTask(body, String(getSettings().qbSavePath || ''));
+    const task = await addTask(body, String(getSettings().qbSavePath || ''));
     sendJson(res, 201, { task });
     return true;
   }
@@ -504,17 +532,17 @@ async function handleApi(req, res, url) {
     }
     if (!action && method === 'DELETE') {
       const deleteFiles = url.searchParams.get('deleteFiles') === '1';
-      const ok = removeTask(id, deleteFiles);
+      const ok = await removeTask(id, deleteFiles);
       sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: '任务不存在' });
       return true;
     }
     if (action === 'pause' && method === 'POST') {
-      const task = pauseTask(id);
+      const task = await pauseTask(id);
       sendJson(res, task ? 200 : 404, task ? { task } : { error: '任务不存在' });
       return true;
     }
     if (action === 'resume' && method === 'POST') {
-      const task = resumeTask(id);
+      const task = await resumeTask(id);
       sendJson(res, task ? 200 : 404, task ? { task } : { error: '任务不存在' });
       return true;
     }
@@ -532,7 +560,7 @@ async function handleApi(req, res, url) {
   }
   if (pathname.startsWith('/api/subscriptions/') && pathname.endsWith('/upgrade') && method === 'POST') {
     const id = decodeURIComponent(pathname.slice('/api/subscriptions/'.length, -'/upgrade'.length));
-    sendJson(res, 200, promoteUpgrade(id));
+    sendJson(res, 200, await promoteUpgrade(id));
     return true;
   }
   if (pathname.startsWith('/api/subscriptions/') && pathname.endsWith('/upgrade') && method === 'DELETE') {
@@ -595,6 +623,9 @@ async function handleApi(req, res, url) {
 /* --------------------------------------------------------------------- 启动 */
 
 const server = http.createServer((req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
   let url;
   try {
     url = new URL(req.url || '/', 'http://localhost');
@@ -629,6 +660,8 @@ const server = http.createServer((req, res) => {
 function shutdown(signal) {
   log.info(`[app] 收到 ${signal}，正在退出`);
   try {
+    flushSettings();
+    shutdownSubscriptions();
     shutdownEngine();
   } catch (err) {
     log.warn(`[app] 关闭下载引擎出错: ${err.message}`);
@@ -639,6 +672,11 @@ function shutdown(signal) {
 
 function main() {
   initLog(DATA_DIR);
+  initAuth(DATA_DIR);
+  const cleanCache = () => pruneImageCache(CACHE_DIR).catch(err => log.warn(`[cache] 清理失败：${err.message}`));
+  setTimeout(cleanCache, 30_000).unref();
+  setInterval(cleanCache, 30 * 60_000).unref();
+  log.info('[auth] 已启用访问保护，登录方式：' + (authMode() === 'password' ? '账号密码' : '访问令牌'));
   const settings = initSettings();
   try {
     initEngine(DATA_DIR);
@@ -668,6 +706,8 @@ function main() {
     }
     if (!settings.tmdbApiKey) log.info('[app] 尚未配置 TMDB API Key，影视墙与搜索需要先到设置页填写');
   });
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 15_000;
   server.on('error', (err) => {
     log.error(`[app] 监听失败: ${err.message}`);
     process.exit(1);

@@ -1,7 +1,7 @@
 # wanspilot 内部 API 契约
 
 前端与后端之间唯一的接口约定。后端实现在 `content/server/`，前端实现在 `content/web/`。
-全部接口同源，路径前缀 `/api`。除 `GET /api/health` 外都受平台登录态保护，前端不需要自己做鉴权。
+全部接口同源，路径前缀 `/api`。除 `/api/health`、`/api/auth/status`、`/api/auth/login` 外均需访问令牌会话或 Bearer 认证。
 
 统一约定：
 
@@ -9,6 +9,13 @@
 - 失败响应沿用 HTTP 语义，正文形如 `{ "error": "中文错误信息" }`。
 - 时间字段一律 ISO 8601 字符串。
 - 字节数字段一律整数，单位 byte。
+
+## 0. 访问认证
+
+- `GET /api/auth/status`：返回 `{ "authenticated": true | false, "required": true, "mode": "password" | "token" }`。
+- `POST /api/auth/login`：账号模式请求 `{ "username": "账号", "password": "密码" }`，令牌模式请求 `{ "token": "访问令牌" }`，成功签发 7 天 HttpOnly、SameSite=Strict Cookie；失败返回 401，单 IP 15 分钟内 10 次失败后返回 429。
+- `POST /api/auth/logout`：清除当前浏览器 Cookie，不集中撤销其他会话。令牌更换并重启后旧会话失效。
+- 自动化请求可带 `Authorization: Bearer <token>`。跨站变更请求被拒绝（403）；未登录的受保护接口返回 401。
 
 ## 1. 健康与系统
 
@@ -38,7 +45,7 @@
 ### `GET /api/settings`
 ```json
 {
-  "tmdbApiKey": "",
+  "tmdbApiKeySet": false,
   "tmdbApiBase": "https://api.tmdb.org/3",
   "tmdbImageBase": "https://tmdb-image-prod.b-cdn.net/t/p",
   "proxy": "",
@@ -55,7 +62,7 @@
   "deleteSamples": true,
   "qbUrl": "http://192.168.1.10:8080",
   "qbUsername": "",
-  "qbPassword": "",
+  "qbPasswordSet": false,
   "qbSavePath": "/downloads",
   "qbLocalPath": "/downloads",
   "qbCategory": "wanspilot"
@@ -63,8 +70,8 @@
 ```
 
 ### `PUT /api/settings`
-请求体是上面对象的任意子集，返回保存后的完整对象。
-`tmdbApiKey` 传空字符串表示清空，未出现的键保持原值。
+请求体是设置字段的任意子集，返回不含密钥的公开设置对象。`tmdbApiKeySet` / `qbPasswordSet` 为只读状态。
+`tmdbApiKey`、`qbPassword` 传空字符串表示清空，未出现的键保持原值。写盘失败返回 507，内存恢复为上次成功保存的状态。
 
 ### `GET /api/settings/status`
 「设置」页用来显示自检结果。
@@ -88,7 +95,7 @@
 
 ### `POST /api/settings/test`
 请求体 `{ "kind": "tmdb" | "image" | "proxy" | "source" | "qb", "id": "apibay" }`，
-强制重测并返回与 `/api/settings/status` 同形的结果。
+强制重测并返回与 `/api/settings/status` 同形的结果。TMDB / image / proxy 测试可带当前草稿 `tmdbApiKey`、`tmdbApiBase`、`tmdbImageBase`、`proxy`，仅用于本次测试，不保存。
 
 `kind: "qb"` 时请求体额外带 `qbUrl` / `qbUsername` / `qbPassword`（不传则用已保存的设置），
 返回 `{ "ok": true, "message": "已连上 qBittorrent v5.0.3", "version": "...", "apiVersion": "2.11.2" }`，
@@ -339,13 +346,16 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 
 ### `GET /api/organizer/status`、`POST /api/organizer/run`
 整理状态与手动整理。自动整理打开后，任务下完会按「片名 (年份)/」归档，
-可选写 `.nfo` 与 `poster.jpg`（Jellyfin / Emby 直接识别），并按设置清掉样本文件。
+可选写 `.nfo` 与 `poster.jpg`（Jellyfin / Emby 直接识别）。优先硬链接，跨盘复制；始终保留 qB 原文件，样本只跳过。重复执行通过 inode / 内容校验避免重复归档。
+
+`GET /api/organizer/preview`：只读预演，不创建目录或文件。返回 `{ "reports": [...] }`。
+每项报告含 `planned`（source / target 列表）、`linked`、`copied`、`existing`、`errors`、`skipped` 等字段；`moved` 为兼容旧客户端保留的成功归档计数，并不表示删除原件。
 
 ### `GET /api/calendar?month=YYYY-MM`
 更新日历：`{ "month": "2026-10", "days": [{ "date": "2026-10-08",
 "items": [{ "subscriptionId": "sub_x1", "tmdbId": 106379, "type": "tv", "title": "流人",
 "posterPath": "/x.jpg", "season": 6, "episode": 4, "airDate": "2026-10-08", "status": "downloaded" }] }],
-"total": 5, "missing": 1 }`。`status` 取 `downloaded`（已下载）或 `missing`（漏了这一集）。
+"total": 5, "missing": 1 }`。`status` 取 `downloaded`（已完成）、`downloading`（下载中）或 `missing`（待补集）。
 
 ### `GET /api/health/report`
 运行状况看板：TMDB 连通性、各索引源延迟、磁盘剩余与配额、任务统计。
@@ -364,7 +374,7 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 
 ## 9. 前端约定
 
-- 单页应用，无构建步骤：`content/web/index.html` + `styles.css` + `app.js` + `opening.css` + `opening.js`，由后端静态托管。
+- 单页应用，无构建步骤：`content/web/index.html` + `styles.css` + `app.js` + `opening.css` + `opening.js` + `cinema.css`，由后端静态托管。
 - 启动开场动画：`opening.css` / `opening.js` 铺一层星空，logo 与字标按 linear 时间轴出现，
   约 2.95 秒后淡出 0.5 秒并移除；点画面、按 Enter、Esc 或空格立即结束，
   `prefers-reduced-motion` 下只留一帧静态画面然后淡出。动画里没有跳过按钮，跳过只靠点击与按键。

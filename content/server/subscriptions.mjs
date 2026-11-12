@@ -10,19 +10,26 @@ import { log } from './log.mjs';
 import { getSettings, resolveDownloadDir } from './settings.mjs';
 import * as tmdb from './tmdb.mjs';
 import { searchResources } from './sources.mjs';
-import { addTask, getTask, listTasks } from './engine.mjs';
+import { addTask, getTask, listTasks, engineReady } from './engine.mjs';
 import { capacityCheck } from './capacity.mjs';
 
 let store = null;
 let timer = null;
 let running = false;
+const checks = new Map();
 
 let engineAdd = null;
+let resourceSearch = searchResources;
+let mediaDetail = tmdb.detail;
+let mediaSeason = tmdb.season;
 let subscribeKeysFactory = null;
 
 export function initSubscriptions(dataDir, deps = {}) {
   store = new JsonStore(path.join(dataDir, 'subscriptions.json'), { items: [] }, { debounceMs: 300 });
   engineAdd = deps.addTask || addTask;
+  resourceSearch = deps.searchResources || searchResources;
+  mediaDetail = deps.detail || tmdb.detail;
+  mediaSeason = deps.season || tmdb.season;
   subscribeKeysFactory = deps.getTask || getTask;
   return listSubscriptions();
 }
@@ -37,6 +44,7 @@ export function listSubscriptions() {
 }
 
 function decorate(item) {
+  if (subscribeKeysFactory && reconcileDownloads(item)) save();
   return {
     id: item.id,
     type: item.type,
@@ -56,6 +64,7 @@ function decorate(item) {
     nextCheckAt: item.nextCheckAt || null,
     lastMessage: item.lastMessage || '',
     downloadedKeys: item.downloadedKeys || [],
+    pendingKeys: Object.keys(item.pendingTasks || {}),
     // 降档下载后如果发现更好的版本，这里带着候选给界面做「替换」提示
     upgrade: item.upgrade || null,
     state: item.state || 'idle',
@@ -260,6 +269,7 @@ const QUALITY_ORDER = ['2160p', '1080p', '720p', '480p'];
 
 /** 从偏好档开始的降级顺序。 */
 function qualityLadder(preference) {
+  if (preference === 'any') return [''];
   const index = QUALITY_ORDER.indexOf(String(preference || '1080p'));
   return QUALITY_ORDER.slice(index >= 0 ? index : 1);
 }
@@ -303,7 +313,7 @@ async function searchForTitle(item, params, localizedTitle, want, extraFilter, o
   const primary = item.originalTitle || localizedTitle || item.title;
   let checked = 0;
   const attempt = async (q) => {
-    const res = await searchResources({ ...params, q });
+    const res = await resourceSearch({ ...params, q });
     checked += res.items.length;
     const pool = extraFilter ? res.items.filter(extraFilter) : res.items;
     return pickBest(pool, item, want, titles, options);
@@ -331,27 +341,27 @@ async function searchWithLadder(item, params, localizedTitle, want, extraFilter)
 }
 
 /** 交给下载引擎。候选已在下载列表里是正常情况，不能记成检查失败。 */
-function addToEngine(item, candidate) {
+async function addToEngine(item, candidate) {
   // 体积已知时先看空间，避免下到一半撑爆网盘
-  const cap = capacityCheck(candidate.sizeBytes, Number(((listTasks().stats) || {}).totalSizeBytes) || 0);
+  const cap = capacityCheck(candidate.sizeBytes, Number(((listTasks().stats) || {}).totalSizeBytes) || 0, Number(((listTasks().stats) || {}).remainingBytes) || 0);
   if (!cap.ok) {
     log.warn(`[subs] ${item.id} 空间不足，跳过《${candidate.title}》：${cap.message}`);
     return { ok: false, duplicate: false, reason: cap.message };
   }
   try {
-    engineAdd({ magnet: candidate.magnet }, resolveDownloadDir());
-    return { ok: true, duplicate: false };
+    const task = await engineAdd({ magnet: candidate.magnet, sizeBytes: candidate.sizeBytes }, getSettings().qbSavePath || '');
+    return { ok: true, duplicate: false, taskId: task?.id || candidate.infoHash || candidate.magnet.match(/btih:([a-f0-9]{40})/i)?.[1] };
   } catch (err) {
     if (/已在下载列表/.test(err.message)) {
       log.info(`[subs] ${item.id} 候选《${candidate.title}》已在下载列表中，跳过重复添加`);
-      return { ok: true, duplicate: true };
+      return { ok: true, duplicate: true, taskId: candidate.infoHash || candidate.magnet.match(/btih:([a-f0-9]{40})/i)?.[1] };
     }
     throw err;
   }
 }
 
 async function checkMovie(item) {
-  const detail = await tmdb.detail({ type: 'movie', id: item.tmdbId });
+  const detail = await mediaDetail({ type: 'movie', id: item.tmdbId });
   item.title = detail.title || item.title;
   item.originalTitle = detail.originalTitle || item.originalTitle || '';
   item.posterPath = detail.posterPath || item.posterPath;
@@ -362,14 +372,14 @@ async function checkMovie(item) {
     item.state = 'watching';
     return { found: 0, added: [] };
   }
-  if (item.downloadedKeys.includes('movie')) {
-    item.lastMessage = '已下载，无需重复获取';
+  if ((item.downloadedKeys.includes('movie') || item.pendingTasks?.movie) && !(item.upgrade?.pending || item.upgrade?.available)) {
+    item.lastMessage = item.pendingTasks?.movie ? '已提交到 qBittorrent，等待下载完成' : '已下载，无需重复获取';
     item.state = 'idle';
     return { found: 0, added: [] };
   }
 
   // 已经下过但当时是降档拿到的，之后每次检查都回头看有没有更好的版本
-  if (item.downloadedKeys.includes('movie') && item.upgrade && item.upgrade.pending) {
+  if ((item.downloadedKeys.includes('movie') || item.pendingTasks?.movie) && item.upgrade && (item.upgrade.pending || item.upgrade.available)) {
     const better = await searchForTitle(
       item,
       { type: 'movie', year: detail.year, qualityPreference: item.qualityPreference },
@@ -412,13 +422,13 @@ async function checkMovie(item) {
     item.lastMessage = `找到 ${checked} 条候选，自动下载已关闭`;
     return { found: checked, added: [] };
   }
-  const added = addToEngine(item, best);
+  const added = await addToEngine(item, best);
   if (!added.ok) {
     item.lastMessage = added.reason || '空间不足，已跳过';
     item.state = 'error';
     return { found: checked, added: [] };
   }
-  item.downloadedKeys = [...item.downloadedKeys, 'movie'];
+  trackSubmission(item, ['movie'], added.taskId);
   item.upgrade = fellBack
     ? { pending: true, reason: `${item.qualityPreference} 暂无符合条件资源，先下 ${usedRung}` }
     : null;
@@ -430,7 +440,7 @@ async function checkMovie(item) {
 }
 
 async function checkTv(item) {
-  const detail = await tmdb.detail({ type: 'tv', id: item.tmdbId });
+  const detail = await mediaDetail({ type: 'tv', id: item.tmdbId });
   item.title = detail.title || item.title;
   item.originalTitle = detail.originalTitle || item.originalTitle || '';
   item.posterPath = detail.posterPath || item.posterPath;
@@ -451,7 +461,7 @@ async function checkTv(item) {
     return { found: 0, added: [] };
   }
 
-  const downloaded = new Set(item.downloadedKeys);
+  const downloaded = new Set([...item.downloadedKeys, ...Object.keys(item.pendingTasks || {})]);
   let totalAired = 0;
   let candidatesChecked = 0;
   const added = [];
@@ -464,7 +474,7 @@ async function checkTv(item) {
     if (budget <= 0) break;
     let seasonInfo;
     try {
-      seasonInfo = await tmdb.season({ id: item.tmdbId, season: seasonNumber });
+      seasonInfo = await mediaSeason({ id: item.tmdbId, season: seasonNumber });
     } catch (err) {
       log.warn(`[subs] ${item.id} 第 ${seasonNumber} 季信息获取失败: ${err.message}`);
       continue;
@@ -486,7 +496,9 @@ async function checkTv(item) {
       );
       candidatesChecked += checked;
       if (pack && item.autoDownload) {
-        const packed = addToEngine(item, pack);
+        const packed = await addToEngine(item, pack);
+        if (!packed.ok) { lastMessage = packed.reason; continue; }
+        trackSubmission(item, missing.map(e => epKey(seasonNumber, e.episodeNumber)), packed.taskId);
         for (const e of missing) {
           downloaded.add(epKey(seasonNumber, e.episodeNumber));
           added.push(epKey(seasonNumber, e.episodeNumber));
@@ -523,7 +535,9 @@ async function checkTv(item) {
         lastMessage = `找到 ${checked} 条候选，自动下载已关闭`;
         continue;
       }
-      const single = addToEngine(item, best);
+      const single = await addToEngine(item, best);
+      if (!single.ok) { lastMessage = single.reason; continue; }
+      trackSubmission(item, [epKey(seasonNumber, episode.episodeNumber)], single.taskId);
       downloaded.add(epKey(seasonNumber, episode.episodeNumber));
       added.push(epKey(seasonNumber, episode.episodeNumber));
       lastMessage = single.duplicate
@@ -533,7 +547,7 @@ async function checkTv(item) {
     }
   }
 
-  item.downloadedKeys = [...downloaded];
+  item.downloadedKeys = [...downloaded].filter(key => !item.pendingTasks?.[key]);
   item.totalEpisodes = totalAired;
   if (!lastMessage) {
     lastMessage = totalAired === 0
@@ -546,7 +560,39 @@ async function checkTv(item) {
 }
 
 /** 执行一次检查，并更新调度字段。 */
-export async function runCheck(item) {
+function trackSubmission(item, keys, taskId) {
+  item.pendingTasks ||= {};
+  for (const key of keys) if (taskId) item.pendingTasks[key] = taskId;
+}
+
+function reconcileDownloads(item) {
+  let changed = false;
+  item.downloadedKeys ||= [];
+  for (const [key, taskId] of Object.entries(item.pendingTasks || {})) {
+    const task = subscribeKeysFactory(taskId);
+    if (!task && !engineReady()) continue;
+    if (task && task.state !== 'error' && Number(task.progress) >= 1) {
+      if (!item.downloadedKeys.includes(key)) item.downloadedKeys.push(key);
+      delete item.pendingTasks[key];
+      changed = true;
+    } else if (!task || task.state === 'error') {
+      delete item.pendingTasks[key];
+      changed = true;
+      item.lastMessage = '上次下载未完成，将重新搜索资源';
+    }
+  }
+  return changed;
+}
+
+export function runCheck(item) {
+  if (checks.has(item.id)) return checks.get(item.id);
+  const work = performCheck(item).finally(() => checks.delete(item.id));
+  checks.set(item.id, work);
+  return work;
+}
+
+async function performCheck(item) {
+  reconcileDownloads(item);
   const started = new Date();
   let result = { found: 0, added: [] };
   try {
@@ -571,20 +617,22 @@ export async function checkNow(id) {
 
 /** 调度循环：每 30 秒看一次有没有到期该检查的订阅。 */
 /** 用户在界面上确认「替换为更好的版本」。 */
-export function promoteUpgrade(id) {
+export async function promoteUpgrade(id) {
   const item = findItem(id);
   if (!item || !item.upgrade || !item.upgrade.available) {
     const err = new Error('当前没有可替换的更好版本');
     err.statusCode = 400;
     throw err;
   }
-  const cap = capacityCheck(item.upgrade.sizeBytes || 0, Number(((listTasks().stats) || {}).totalSizeBytes) || 0);
+  const cap = capacityCheck(item.upgrade.sizeBytes || 0, Number(((listTasks().stats) || {}).totalSizeBytes) || 0, Number(((listTasks().stats) || {}).remainingBytes) || 0);
   if (!cap.ok) {
     const err = new Error(cap.message);
     err.statusCode = 413;
     throw err;
   }
-  engineAdd({ magnet: item.upgrade.magnet }, resolveDownloadDir());
+  const added = await addToEngine(item, item.upgrade);
+  if (!added.ok) throw new Error(added.reason);
+  trackSubmission(item, ['movie'], added.taskId);
   const title = item.upgrade.title;
   item.upgrade = null;
   item.lastMessage = `已加入更好的版本：${title}`;
@@ -686,4 +734,10 @@ export function importPayload(payload) {
   store.data.items = items;
   save();
   return { imported, skipped };
+}
+
+export function shutdownSubscriptions() {
+  if (timer) clearInterval(timer);
+  timer = null;
+  if (store?.pending) store.flush();
 }

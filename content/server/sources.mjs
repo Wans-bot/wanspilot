@@ -78,15 +78,19 @@ export function parseTitle(title) {
   if (src) out.sourceTag = src.key;
 
   // 季集：支持 S01E02、S01E01E02、S01E01-E03、1x02、第1季第2集
-  const multi = /S(\d{1,2})E(\d{1,3})((?:[-.]?E?\d{1,3})*)/i.exec(text);
+  const multi = /S(\d{1,2})E(\d{1,3})((?:(?:-E?\d{1,3})|(?:E\d{1,3}))*)/i.exec(text);
   if (multi) {
-    const season = Number.parseInt(multi[1], 10);
-    const first = Number.parseInt(multi[2], 10);
-    out.season = season;
-    out.episode = first;
-    const eps = new Set([first]);
-    const rest = multi[3] || '';
-    for (const m of rest.matchAll(/(\d{1,3})/g)) eps.add(Number.parseInt(m[1], 10));
+    out.season = Number(multi[1]);
+    out.episode = Number(multi[2]);
+    const eps = new Set([out.episode]);
+    let last = out.episode;
+    for (const m of multi[3].matchAll(/(-E?|E)(\d{1,3})/gi)) {
+      const end = Number(m[2]);
+      if (m[1].startsWith('-') && end >= last && end - last <= 200) {
+        for (let n = last + 1; n <= end; n++) eps.add(n);
+      } else eps.add(end);
+      last = end;
+    }
     out.episodeList = [...eps].sort((a, b) => a - b);
   } else {
     const alt = /(\d{1,2})x(\d{1,3})/.exec(text);
@@ -487,8 +491,8 @@ export async function searchResources(context) {
 }
 
 /** 各源连通性自检，供设置页显示。 */
-export async function sourcesStatus() {
-  const sources = activeSources();
+export async function sourcesStatus(id = null) {
+  const sources = activeSources().filter(source => !id || source.id === id);
   return Promise.all(
     sources.map(async (source) => {
       const started = Date.now();

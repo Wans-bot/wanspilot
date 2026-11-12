@@ -73,7 +73,8 @@ export async function month(monthKey) {
       for (const episode of episodes) {
         const airDate = String(episode.airDate || '');
         if (!airDate.startsWith(key)) continue;
-        const status = downloaded.has(epKey(seasonNumber, episode.episodeNumber)) ? 'downloaded' : 'missing';
+        const episodeKey = epKey(seasonNumber, episode.episodeNumber);
+        const status = downloaded.has(episodeKey) ? 'downloaded' : (sub.pendingKeys?.includes(episodeKey) ? 'downloading' : 'missing');
         const entry = {
           subscriptionId: sub.id,
           tmdbId: sub.tmdbId,

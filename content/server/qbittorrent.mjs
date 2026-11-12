@@ -208,7 +208,7 @@ export class QBClient {
   async #json(path, options) {
     const { res, text } = await this.#authed(path, options);
     if (res.status >= 400) {
-      throw new QBError(`qBittorrent 返回 ${res.status}：${text.slice(0, 200) || '无响应内容'}`);
+      throw new QBError(`qBittorrent 返回 ${res.status}：${text.slice(0, 200) || '无响应内容'}`, { statusCode: res.status });
     }
     if (!text.trim()) return null;
     try {
@@ -221,7 +221,7 @@ export class QBClient {
   async #text(path, options) {
     const { res, text } = await this.#authed(path, options);
     if (res.status >= 400) {
-      throw new QBError(`qBittorrent 返回 ${res.status}：${text.slice(0, 200) || '无响应内容'}`);
+      throw new QBError(`qBittorrent 返回 ${res.status}：${text.slice(0, 200) || '无响应内容'}`, { statusCode: res.status });
     }
     return text.trim();
   }

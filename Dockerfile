@@ -7,6 +7,8 @@ COPY content/package.json content/package-lock.json ./
 RUN npm ci --omit=dev
 
 FROM node:22-bookworm-slim
+ARG VCS_REF=source
+ENV WP_BUILD_SHA=$VCS_REF
 ENV NODE_ENV=production \
     WP_DATA_DIR=/data \
     WP_DOWNLOAD_DIR=/downloads \

@@ -42,7 +42,7 @@ function write(level, args) {
         return String(a);
       }
     })
-    .join(' ');
+    .join(' ').replace(/([?&]api_key=)[^&\s]+/gi, '$1[redacted]').replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@');
   const line = `${time} [${level}] ${text}`;
 
   lines.push(line);
@@ -53,7 +53,11 @@ function write(level, args) {
 
   if (logFile) {
     try {
-      if (!fileHandle) fileHandle = fs.openSync(logFile, 'a');
+      if (fileHandle !== null && fs.fstatSync(fileHandle).size > MAX_FILE_BYTES) {
+        fs.closeSync(fileHandle); fileHandle = null;
+        fs.renameSync(logFile, logFile + '.1');
+      }
+      if (fileHandle === null) fileHandle = fs.openSync(logFile, 'a', 0o600);
       fs.writeSync(fileHandle, line + '\n');
     } catch {
       // 写日志失败不应影响业务

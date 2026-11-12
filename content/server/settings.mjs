@@ -85,6 +85,13 @@ export function getSettings() {
   return { ...DEFAULT_SETTINGS, ...store.data };
 }
 
+export function publicSettings() {
+  const { tmdbApiKey, qbPassword, ...safe } = getSettings();
+  return { ...safe, tmdbApiKeySet: Boolean(tmdbApiKey), qbPasswordSet: Boolean(qbPassword) };
+}
+
+export function flushSettings() { if (store?.pending) store.flush(); }
+
 function clampInt(value, min, max, fallback) {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -191,18 +198,24 @@ export function updateSettings(patch) {
     next.theme = v === 'light' || v === 'dark' ? v : 'dark';
   }
 
-  store.data = next;
-  store.save();
-
   if ('downloadDir' in patch) {
     try {
-      fs.mkdirSync(resolveDownloadDir(), { recursive: true });
+      const dir = resolveDownloadDir({ ...DEFAULT_SETTINGS, ...next });
+      if (dir) fs.mkdirSync(dir, { recursive: true });
     } catch (err) {
       log.error(`[settings] 创建下载目录失败: ${err.message}`);
       const wrapped = new Error(`下载目录不可用: ${err.message}`);
       wrapped.statusCode = 400;
       throw wrapped;
     }
+  }
+  const previous = store.data;
+  store.data = next;
+  try { store.flush(); } catch (err) {
+    store.data = previous;
+    const wrapped = new Error(`保存失败，请检查数据目录权限或磁盘空间：${err.message}`);
+    wrapped.statusCode = 507;
+    throw wrapped;
   }
   return getSettings();
 }

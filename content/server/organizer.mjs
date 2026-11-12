@@ -1,15 +1,13 @@
 /**
- * 下载后整理。
- *
- * 任务下完后按「片名 (年份)/」归档，剧集再补一层 Season NN；可选写 .nfo 与海报，
- * 让下载好的片子直接被 Jellyfin / Emby / Kodi 认出来，并清掉样本文件。
- *
- * 三个开关都默认关闭，在设置里逐个打开。整理只在下载目录内做移动，
- * 不动下载目录以外的任何东西；重名时加 (2)、(3) 后缀，不覆盖已有文件。
+ * 下载后整理：按片名 / 年份和季度归档，可选写 NFO 与海报。
+ * 优先硬链接，跨文件系统时复制；始终保留原始文件与 qB 做种路径。
+ * 样本只跳过；重名时不覆盖，重复执行通过 inode / 内容校验跳过。
  */
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { JsonStore } from './store.mjs';
 import path from 'node:path';
-import { resolveDownloadDir, getSettings } from './settings.mjs';
+import { DATA_DIR, resolveDownloadDir, getSettings } from './settings.mjs';
 import { log } from './log.mjs';
 import { subscribe, listTasks } from './engine.mjs';
 import * as tmdb from './tmdb.mjs';
@@ -18,6 +16,10 @@ import { listSubscriptions } from './subscriptions.mjs';
 const SAMPLE_PATTERN = /(^|[.\-_ ])(sample|samples|rarbg|\.url$|\.txt$|\.nfo$)/i;
 
 let processed = new Set();
+let organizerStore = null;
+const queued = new Set();
+const retryAfter = new Map();
+let queue = Promise.resolve();
 let running = false;
 let lastReport = null;
 
@@ -51,7 +53,7 @@ function describeTask(task) {
     originalTitle: '',
     year: yearMatch ? yearMatch[0] : '',
     tmdbId: 0,
-    type: /\bS\d{1,2}\b|\bseason\b|第\s*\d+\s*季/i.test(name) ? 'tv' : 'movie',
+    type: /\bS\d{1,2}(?:E\d+)?\b|\bseason\b|第\s*\d+\s*季/i.test(name) ? 'tv' : 'movie',
   };
 }
 
@@ -84,24 +86,28 @@ function uniquePath(target) {
   return path.join(dir, `${base}-${Date.now()}${ext}`);
 }
 
-function moveFile(from, to) {
-  try {
-    fs.renameSync(from, to);
-    return true;
-  } catch (err) {
-    // 跨设备时 rename 会失败，退化为复制后删除
-    try {
-      fs.copyFileSync(from, to);
-      fs.unlinkSync(from);
-      return true;
-    } catch (inner) {
-      log.warn(`[organize] 移动失败 ${from} → ${to}：${inner.message}`);
-      return false;
-    }
+async function sameFile(from, to) {
+  if (!fs.existsSync(to)) return false;
+  const a = fs.statSync(from), b = fs.statSync(to);
+  if (a.dev === b.dev && a.ino === b.ino) return true;
+  if (a.size !== b.size) return false;
+  const digest = async file => {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+    return hash.digest('hex');
+  };
+  return (await digest(from)) === (await digest(to));
+}
+
+async function linkFile(from, to) {
+  try { await fs.promises.link(from, to); return 'linked'; }
+  catch (err) {
+    if (err.code !== 'EXDEV' && err.code !== 'EPERM' && err.code !== 'EOPNOTSUPP') throw err;
+    await fs.promises.copyFile(from, to, fs.constants.COPYFILE_EXCL);
+    return 'copied';
   }
 }
 
-/** 写 Kodi/Jellyfin 认的 .nfo 与海报。 */
 async function writeMetadata(dir, info) {
   if (!info.tmdbId) return { nfo: false, poster: false };
   let detail = null;
@@ -138,7 +144,10 @@ async function writeMetadata(dir, info) {
   const nfoName = info.type === 'tv' ? 'tvshow.nfo' : 'movie.nfo';
   let nfo = false;
   try {
-    fs.writeFileSync(path.join(dir, nfoName), xml, 'utf8');
+    const dest = path.join(dir, nfoName);
+    const tmp = `${dest}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    fs.writeFileSync(tmp, xml, { flag: 'wx' });
+    fs.renameSync(tmp, dest);
     nfo = true;
   } catch (err) {
     log.warn(`[organize] 写 ${nfoName} 失败：${err.message}`);
@@ -149,7 +158,10 @@ async function writeMetadata(dir, info) {
   if (posterPath) {
     try {
       const image = await tmdb.fetchImage(posterPath, 'w500');
-      fs.writeFileSync(path.join(dir, 'poster.jpg'), image.body);
+      const dest = path.join(dir, 'poster.jpg');
+      const tmp = `${dest}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      fs.writeFileSync(tmp, image.body, { flag: 'wx' });
+      fs.renameSync(tmp, dest);
       poster = true;
     } catch (err) {
       log.warn(`[organize] 写海报失败：${err.message}`);
@@ -174,8 +186,13 @@ function escapeXml(text) {
 export async function organizeTask(task, options = {}) {
   const settings = getSettings();
   const root = resolveDownloadDir();
+  let sourceRoot = root;
+  if (root && settings.qbSavePath && task.savePath) {
+    const rel = path.relative(settings.qbSavePath, task.savePath);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) sourceRoot = path.join(root, rel);
+  }
   const files = Array.isArray(task.files) ? task.files : [];
-  const report = { taskId: task.id, name: task.name, moved: 0, samples: 0, folder: '', nfo: false, poster: false, skipped: '' };
+  const report = { taskId: task.id, name: task.name, moved: 0, samples: 0, folder: '', nfo: false, poster: false, skipped: '', linked: 0, copied: 0, existing: 0, errors: [], planned: [] };
   if (!root) {
     report.skipped = '未挂载下载目录';
     return report;
@@ -200,35 +217,52 @@ export async function organizeTask(task, options = {}) {
 
   for (const file of files) {
     const relative = String(file.path || '').split('/').filter((seg) => seg && seg !== '.' && seg !== '..').join('/');
-    const source = path.resolve(root, relative);
-    if (!source.startsWith(path.resolve(root) + path.sep) || !fs.existsSync(source)) continue;
+    const source = path.resolve(sourceRoot, relative);
+    if (!source.startsWith(path.resolve(root) + path.sep) || !fs.existsSync(source)) { report.errors.push(`${relative}：文件暂不可读，请检查路径映射`); continue; }
 
+    const realRoot = fs.realpathSync(root);
+    const realSource = fs.realpathSync(source);
+    if (!realSource.startsWith(realRoot + path.sep)) { report.errors.push('文件路径超出挂载目录'); continue; }
     const baseName = path.basename(relative);
     if (settings.deleteSamples && SAMPLE_PATTERN.test(baseName) && Number(file.sizeBytes || 0) < 50 * 1024 * 1024) {
-      try {
-        fs.unlinkSync(source);
-        report.samples += 1;
-      } catch (err) {
-        log.warn(`[organize] 删样本失败：${err.message}`);
-      }
+      report.samples += 1;
       continue;
     }
 
     const season = info.type === 'tv' ? seasonFolderFrom(baseName) : '';
-    const targetDir = ensureDir(season ? path.join(root, folder, season) : path.join(root, folder));
-    const target = uniquePath(path.join(targetDir, baseName));
-    if (moveFile(source, target)) report.moved += 1;
+    const targetDir = season ? path.join(root, folder, season) : path.join(root, folder);
+    const intended = path.join(targetDir, baseName);
+    let ancestor = targetDir;
+    while (!fs.existsSync(ancestor)) ancestor = path.dirname(ancestor);
+    const realAncestor = fs.realpathSync(ancestor);
+    if (realAncestor !== realRoot && !realAncestor.startsWith(realRoot + path.sep)) {
+      report.errors.push('目标目录超出挂载目录'); continue;
+    }
+    if (fs.existsSync(intended) && (fs.lstatSync(intended).isSymbolicLink() || await sameFile(source, intended))) {
+      if (fs.lstatSync(intended).isSymbolicLink()) report.errors.push('目标文件是符号链接，已跳过');
+      else report.existing += 1;
+      continue;
+    }
+    const target = uniquePath(intended);
+    report.planned.push({ source: relative, target: path.relative(root, target), action: '硬链接（跨盘保留原件复制）' });
+    if (options.dryRun) continue;
+    try {
+      ensureDir(targetDir);
+      const method = await linkFile(source, target);
+      report[method] += 1;
+      report.moved += 1;
+    } catch (err) { report.errors.push(`${baseName}：${err.message}`); }
   }
 
-  if (settings.writeNfo) {
+  if (settings.writeNfo && !options.dryRun && (report.moved || report.existing)) {
     const meta = await writeMetadata(path.join(root, folder), info);
     report.nfo = meta.nfo;
     report.poster = meta.poster;
   }
 
   // 清掉整理后留下的空目录（只删下载目录内的）
-  pruneEmptyDirs(root);
-  log.info(`[organize] ${report.name} → ${folder}：移动 ${report.moved} 个文件，清样本 ${report.samples} 个`);
+  // qB 原文件及目录完整保留，整理不会中断做种。
+  log.info(`[organize] ${report.name} → ${folder}：硬链接 ${report.linked} 个，复制 ${report.copied} 个，跳过样本 ${report.samples} 个`);
   return report;
 }
 
@@ -256,31 +290,42 @@ function pruneEmptyDirs(root) {
 
 /** 任务下完就自动整理；已经在队列里的不重复处理。 */
 export function initOrganizer() {
+  organizerStore = new JsonStore(path.join(DATA_DIR, 'organizer.json'), { processed: [] });
+  processed = new Set(organizerStore.data.processed || []);
   subscribe((snapshot) => {
-    const settings = getSettings();
-    if (!settings.autoOrganize) return;
-    const items = (snapshot && snapshot.items) || [];
-    for (const task of items) {
-      if (Number(task.progress || 0) < 1) continue;
-      if (['completed', 'seeding'].indexOf(task.state) < 0) continue;
-      if (processed.has(task.id)) continue;
-      processed.add(task.id);
-      organizeTask(task).catch((err) => log.warn(`[organize] 自动整理失败：${err.message}`));
+    if (!getSettings().autoOrganize) return;
+    for (const task of snapshot?.items || []) {
+      if (Number(task.progress || 0) < 1 || !['completed', 'seeding'].includes(task.state)) continue;
+      if (processed.has(task.id) || queued.has(task.id) || (retryAfter.get(task.id) || 0) > Date.now()) continue;
+      if (!task.files?.length) continue;
+      queued.add(task.id);
+      queue = queue.then(async () => {
+        const report = await organizeTask(task);
+        if (!report.skipped && !report.errors.length && (report.moved || report.existing)) {
+          processed.add(task.id);
+          organizerStore.data.processed = [...processed];
+          organizerStore.flush();
+        } else retryAfter.set(task.id, Date.now() + 60_000);
+      }).catch(err => {
+        retryAfter.set(task.id, Date.now() + 60_000);
+        log.warn(`[organize] 自动整理失败，将重试：${err.message}`);
+      }).finally(() => queued.delete(task.id));
     }
   });
 }
 
 /** 手动整理所有已完成的任务。 */
-export async function organizeAll() {
+export async function organizeAll(options = {}) {
+  await queue;
   if (running) return { running: true, reports: [] };
   running = true;
   try {
     const tasks = (listTasks().items || []).filter((task) => Number(task.progress || 0) >= 1);
     const reports = [];
     for (const task of tasks) {
-      reports.push(await organizeTask(Object.assign({}, task, { files: task.files || [] }), { force: true }));
+      reports.push(await organizeTask(Object.assign({}, task, { files: task.files || [] }), { force: true, dryRun: Boolean(options.dryRun) }));
     }
-    lastReport = { at: new Date().toISOString(), reports };
+    if (!options.dryRun) lastReport = { at: new Date().toISOString(), reports };
     return { running: false, reports };
   } finally {
     running = false;
@@ -290,6 +335,7 @@ export async function organizeAll() {
 export function organizerStatus() {
   const settings = getSettings();
   return {
+    mode: 'hardlink-or-copy',
     autoOrganize: Boolean(settings.autoOrganize),
     writeNfo: Boolean(settings.writeNfo),
     deleteSamples: Boolean(settings.deleteSamples),
