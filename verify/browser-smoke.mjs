@@ -96,7 +96,7 @@ async function install(page) {
       if (url.pathname === '/api/tmdb/languages') return json({ languages: [{ code: 'zh', name: '中文' }, { code: 'en', name: '英语' }] });
       if (['/api/tmdb/browse', '/api/tmdb/discover', '/api/tmdb/search'].includes(url.pathname)) return json({ items: cards, page: 1, totalPages: 1, totalResults: cards.length });
       if (url.pathname === '/api/tmdb/detail') return json({ ...cards.find(c => String(c.id) === url.searchParams.get('id')) || cards[0], runtime: 128, status: '已上映', genres: ['剧情', '冒险'], related: cards.slice(1, 8), cast: [], stills: [], seasons: [] });
-      if (url.pathname === '/api/resources') return json({ sources: [{ id: 'fixture', name: '示例索引源', ok: true, count: 3, latencyMs: 128 }], items: [...[1, 2, 3].map((n, i) => ({ id: n, infoHash: String(n).repeat(40), magnet: 'magnet:?xt=urn:btih:' + String(n).repeat(40), title: 'Example.Movie.2026.' + (i === 0 ? '2160p.BluRay.REMUX' : '1080p.WEB-DL') + '.H265', resolution: i === 0 ? '2160p' : '1080p', codec: 'H265', sourceTag: 'WEB', seeders: 28 + n * 15, sizeBytes: n * 1024 ** 3, indexerName: '示例索引源' })), { id: 'mikan-1', infoHash: '', magnet: '', releaseId: 'rel-mikan', title: '[7³ACG] 进击的巨人 剧场版 1080p', resolution: '1080p', codec: 'AV1', sourceTag: 'BDrip', seeders: 0, seedersUnknown: true, sizeBytes: 3865470464, indexerName: 'Mikan Project' }] });
+      if (url.pathname === '/api/resources') return json({ sources: [{ id: 'fixture', name: '示例索引源', ok: true, count: 3, latencyMs: 128 }, { id: 'nyaa', name: 'Nyaa', ok: false, count: 0, latencyMs: 0, skipped: true, error: '未配置网络代理，已跳过' }], items: [...[1, 2, 3].map((n, i) => ({ id: n, infoHash: String(n).repeat(40), magnet: 'magnet:?xt=urn:btih:' + String(n).repeat(40), title: 'Example.Movie.2026.' + (i === 0 ? '2160p.BluRay.REMUX' : '1080p.WEB-DL') + '.H265', resolution: i === 0 ? '2160p' : '1080p', codec: 'H265', sourceTag: 'WEB', seeders: 28 + n * 15, sizeBytes: n * 1024 ** 3, indexerName: '示例索引源' })), { id: 'mikan-1', infoHash: '', magnet: '', releaseId: 'rel-mikan', title: '[7³ACG] 进击的巨人 剧场版 1080p', resolution: '1080p', codec: 'AV1', sourceTag: 'BDrip', seeders: 0, seedersUnknown: true, sizeBytes: 3865470464, indexerName: 'Mikan Project' }] });
       if (url.pathname === '/api/subscriptions' && req.method() === 'GET') return json({ items: subs });
       if (url.pathname === '/api/tasks' && req.method() === 'GET') return json(tasks);
       if (url.pathname === '/api/tasks/events') return req.respond({ status: 200, contentType: 'text/event-stream', body: `data: ${JSON.stringify(tasks)}\n\n` });
@@ -220,6 +220,8 @@ try {
   if(!await page.$eval('.filter-advanced',node=>node.open))await page.click('.filter-advanced > summary');
   const currentShanghaiYear=Number(new Intl.DateTimeFormat('en',{timeZone:'Asia/Shanghai',year:'numeric'}).format(new Date()));
   const yearLabels=await page.$$eval('[data-key="years"]',nodes=>nodes.map(node=>node.textContent));
+  const yearNumbers=yearLabels.map(Number).filter(Number.isFinite);
+  assert.deepEqual(yearNumbers,[...yearNumbers].sort((a,b)=>b-a),'year filter lists the newest year first');
   for(let year=2020;year<=currentShanghaiYear;year++)assert.ok(yearLabels.includes(String(year)));
   assert.ok(!yearLabels.includes(String(currentShanghaiYear+1)));
   for(const year of [...new Set(['2021','2022','2023',String(currentShanghaiYear)])]){
@@ -229,8 +231,8 @@ try {
     assert.ok((await page.$eval('.selected-filters',node=>node.textContent)).includes(year));
   }
   await page.screenshot({path:path.join(out,'search-specific-years-desktop.png')});
-  await page.click('[data-key="years"][data-value="2020-2029"]');
-  await page.waitForFunction(()=>location.hash.includes('years=2020-2029'));
+  await page.click('[data-key="years"][data-value="2010-2019"]');
+  await page.waitForFunction(()=>location.hash.includes('years=2010-2019'));
   await page.waitForSelector('[data-action="filter-reset"]',{visible:true});await pause(180);await page.click('[data-action="filter-reset"]');await page.waitForFunction(()=>!location.hash.includes('years='));
   record('search exposes individual years through Shanghai current year and sends exact-year ranges');
 
@@ -258,7 +260,7 @@ try {
   record('subscription search and download stages refresh without reload and history remains visible');
   await page.evaluate(()=>{location.hash='#/settings?tab=diag';});await page.waitForSelector('#logs');
   await page.waitForFunction(()=>document.querySelector('#logs')?.textContent.includes('创建订阅'));
-  const initialReads=logReads;await page.waitForFunction(()=>document.querySelector('#logs')?.textContent.includes('刷新次数 2'),{timeout:10000});
+  await page.waitForFunction(()=>document.querySelector('#logs')?.textContent.includes('刷新次数 2'),{timeout:10000});
   await page.type('#logs-filter','创建订阅');
   assert.ok(!(await page.$eval('#logs',n=>n.textContent)).includes('正在搜索'));
   await page.screenshot({path:path.join(out,'operation-logs-desktop.png')});record('operation logs auto load refresh and filter');
@@ -275,6 +277,9 @@ try {
   }
   await page.evaluate(()=>{location.hash='#/resources/movie/1?title=Example';});await page.waitForSelector('.res');
   assert.ok((await page.$eval('#view',n=>n.textContent)).includes('做种 未知'));record('unknown seeder counts render as 未知 instead of 0');
+  const sourceChips = await page.$eval('#view', n => n.textContent);
+  assert.ok(sourceChips.includes('未配置网络代理，已跳过'), 'sources disabled by a missing proxy explain themselves');
+  record('proxy-gated sources explain why they were skipped');
   await page.evaluate(()=>{location.hash='#/sources';});await page.waitForSelector('.source-card');
   await page.evaluate(()=>[...document.querySelectorAll('.source-card button')].find(b=>b.textContent==='编辑').click());await page.waitForSelector('#source-form');
   assert.equal(await page.$eval('#source-form [name=url]',n=>n.value),'');assert.equal(await page.$eval('#source-form [name=apiKey]',n=>n.value),'');
@@ -366,21 +371,41 @@ try {
   await mobile.screenshot({ path: path.join(out, 'calendar-timeline-mobile.png') });
   await mobile.evaluate(() => scrollTo(0, 0));
   await mobile.click('[data-action="theme-toggle"]');
-  const fade = await mobile.evaluate(() => ({
-    active: document.documentElement.classList.contains('theme-fade'),
-    duration: getComputedStyle(document.body).transitionDuration,
-    icons: document.querySelectorAll('[data-action="theme-toggle"] svg.icon').length,
-  }));
-  assert.equal(fade.active, true, 'theme switch fades linearly instead of snapping');
-  assert.match(fade.duration, /0\.4s/, 'theme fade lasts 0.4s');
-  assert.equal(fade.icons, 1, 'theme switch is a single icon button');
-  record('theme toggle fades linearly', fade);
-  await pause(700);
-  assert.equal(await mobile.evaluate(() => document.documentElement.classList.contains('theme-fade')), false, 'theme fade class is cleared afterwards');
+  const wipe = await mobile.evaluate(async () => {
+    const root = document.documentElement;
+    const deadline = Date.now() + 1200;
+    let curtain = document.querySelector('.theme-curtain');
+    while (!curtain && Date.now() < deadline) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      curtain = document.querySelector('.theme-curtain');
+    }
+    return {
+      curtain: Boolean(curtain),
+      target: curtain ? curtain.dataset.theme : '',
+      clip: curtain ? getComputedStyle(curtain).clipPath : '',
+      icons: document.querySelectorAll('[data-action="theme-toggle"] svg.icon').length,
+    };
+  });
+  assert.equal(wipe.curtain, true, 'theme switch sweeps a curtain instead of snapping');
+  assert.match(wipe.clip, /^circle\(/, 'curtain grows as a circle anchored at the top-right corner');
+  assert.equal(wipe.icons, 1, 'theme switch is a single icon button');
+  record('theme toggle wipes in from the top-right', wipe);
+  await mobile.screenshot({ path: path.join(out, 'theme-wipe-mid.png') });
+  await pause(220);
+  await mobile.screenshot({ path: path.join(out, 'theme-wipe-late.png') });
+  await pause(900);
+  assert.equal(await mobile.evaluate(() => Boolean(document.querySelector('.theme-curtain'))), false, 'curtain is removed after the sweep');
+  assert.equal(await mobile.evaluate(() => document.documentElement.dataset.theme), 'light', 'the sweep lands on the new theme');
+  // 再点两次回到浅色主题，后面的浅色断言继续成立
+  await mobile.click('[data-action="theme-toggle"]');
+  await pause(900);
+  await mobile.click('[data-action="theme-toggle"]');
+  await pause(900);
   await checkLayout(mobile, 'calendar mobile light');
   await mobile.screenshot({ path: path.join(out, 'calendar-light-mobile.png'), fullPage: true });
   await mobile.click('[data-action="theme-toggle"]');
-  await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');
+  // 视图过渡期间点击会被过渡层吃掉，等扫完再点第二次
+  await pause(760); await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');
   assert.equal(await mobile.$eval('html', n => n.dataset.theme), 'light');assert.equal(await mobile.$eval('.btn',n=>getComputedStyle(n).borderRadius),'8px');record('light theme shares eight-pixel control radius'); await mobile.screenshot({ path: path.join(out, 'home-light-mobile.png') });
   if (process.env.WP_MOBILE_MATRIX) {
     const audit = [];

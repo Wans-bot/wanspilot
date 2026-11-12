@@ -1374,7 +1374,17 @@ textarea { border-radius: var(--radius-sm); }
 }
 .themebtn .icon { width: 18px; height: 18px; }
 .themebtn:hover { background: var(--hover-soft); color: var(--text); }
-/* 切换瞬间给全站挂线性过渡，0.4 秒内渐隐渐显；结束后摘掉，不影响平时交互 */
+/* 主题切换：新主题底色从右上角沿对角线铺满整屏，铺满后换成新主题再掀开 */
+.theme-curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  pointer-events: none;
+  will-change: clip-path;
+}
+.theme-curtain[data-theme='dark'] { background: #0a0a0b; }
+.theme-curtain[data-theme='light'] { background: #f6f4ef; }
+/* 兜底：不支持视图过渡时给全站挂线性过渡，0.4 秒内渐隐渐显；结束后摘掉，不影响平时交互 */
 html.theme-fade,
 html.theme-fade body,
 html.theme-fade *,
@@ -1389,6 +1399,7 @@ html.theme-fade *::after {
   html.theme-fade *,
   html.theme-fade *::before,
   html.theme-fade *::after { transition: none !important; }
+  .theme-curtain { display: none; }
 }
 /* 筛选：条件平铺成 chips，横向可滚，不用下拉 */
 .filters {

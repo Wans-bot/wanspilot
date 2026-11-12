@@ -177,7 +177,6 @@ function baseItem({ infoHash, title, indexer, indexerName, sizeBytes, seeders, l
 
 const CATEGORY_ALL = 0;
 const CATEGORY_TV = 205;
-const CATEGORY_ANIME = 208;
 
 async function searchApibay(query, context) {
   const cat = context.type === 'tv' || context.type === 'anime' ? CATEGORY_TV : CATEGORY_ALL;
@@ -543,6 +542,13 @@ function buildQueries(context) {
   return [...new Set(queries)];
 }
 
+/** 因没有配置代理而没启用的内置源，供界面说明原因。 */
+export function skippedSources() {
+  const { proxy } = getSettings();
+  if (proxy) return [];
+  return REGISTRY.filter((source) => source.needsProxy)
+    .map((source) => ({ id: source.id, name: source.name, reason: '未配置网络代理，已跳过' }));
+}
 export function activeSources() {
   const { proxy } = getSettings();
   return [...REGISTRY.filter((s) => !s.needsProxy || proxy),...configuredSources().map(source=>({...source,run:async(q,context)=>{const items=await source.run(q,context);return items.map(raw=>({...baseItem({...raw,indexer:source.id,indexerName:source.name}),magnet:'',id:source.id+':'+(raw.infoHash || raw.releaseKey),releaseId:raw.releaseId,releaseKey:raw.releaseKey}));}}))];
@@ -619,8 +625,21 @@ export async function searchResources(context) {
   }
 
   const started = Date.now();
+
   const sourceReports = [];
   const collected = [];
+  // 没配代理而停用的源也列进报告：用户才能看到「这个站为什么没结果」
+  for (const skipped of skippedSources()) {
+    sourceReports.push({
+      id: skipped.id,
+      name: skipped.name,
+      ok: false,
+      count: 0,
+      latencyMs: 0,
+      skipped: true,
+      error: skipped.reason,
+    });
+  }
 
   const work = sources.map((source) => runSource(source, runQueries, context, collected, sourceReports));
 

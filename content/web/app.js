@@ -987,18 +987,22 @@ function hasFilters(filters) {
     || (filters.sort && filters.sort !== 'popularity'));
 }
 
-const YEAR_RANGES = [
-  { value: '', label: '不限' },
-  { value: '2020-2029', label: '2020 年代' },
-  ...Array.from({ length: Math.max(0, Number(shanghaiDate().slice(0, 4)) - 2019) }, function (_, index) {
-    const year = String(2020 + index);
+const YEAR_RANGES = (function () {
+  const currentYear = Number(shanghaiDate().slice(0, 4));
+  // 最新的年份排在最前面，越往后越早；年代段接在具体年份之后
+  const years = Array.from({ length: Math.max(0, currentYear - 2019) }, function (_, index) {
+    const year = String(currentYear - index);
     return { value: year + '-' + year, label: year };
-  }),
-  { value: '2010-2019', label: '2010 年代' },
-  { value: '2000-2009', label: '2000 年代' },
-  { value: '1990-1999', label: '1990 年代' },
-  { value: '..1989', label: '1989 以前' },
-];
+  });
+  return [
+    { value: '', label: '不限' },
+    ...years,
+    { value: '2010-2019', label: '2010 年代' },
+    { value: '2000-2009', label: '2000 年代' },
+    { value: '1990-1999', label: '1990 年代' },
+    { value: '..1989', label: '1989 以前' },
+  ];
+})();
 
 /** 风格与语种的候选值，按类型缓存，避免每次进搜索页都打接口。 */
 async function loadFilterOptions(browseType) {
@@ -3748,7 +3752,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     });
     const form = document.querySelector('#settings-form');
     if (form) form.classList.toggle('is-diag', target === 'diag');
-    try { history.replaceState(null, '', '#/settings?tab=' + target); } catch (error) { /* 忽略 */ }
+    try { history.replaceState(null, '', '#/settings?tab=' + target); } catch { /* 忽略 */ }
     const shell = document.querySelector('.settings-shell');
     if (shell) shell.scrollIntoView({ block: 'start', behavior: 'smooth' });
     if(target==='diag')refreshLogs(true);
@@ -4390,39 +4394,97 @@ function themeLabel(pref) {
 }
 
 let themeFadeTimer = 0;
+let themeWipeTimer = 0;
+let themeTransitionActive = false;
+let themeRequest = 0;
+let themeTarget = '';
+const THEME_FADE_MS = 520;
+const THEME_WIPE_MS = 380;
 
-/** 切换主题时让颜色线性过渡到新主题，而不是瞬间跳变；尊重系统的「减少动效」。 */
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+/** 主题切换：新底色从右上角扫到左下，铺满后换主题再掀开，全程线性；不占用指针事件。 */
+function runThemeTransition(commit, next) {
+  const root = document.documentElement;
+  if (prefersReducedMotion() || themeTransitionActive) { commit(); return; }
+  themeTransitionActive = true;
+  const curtain = document.createElement('div');
+  curtain.className = 'theme-curtain';
+  curtain.dataset.theme = next;
+  curtain.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(curtain);
+  const width = window.innerWidth || root.clientWidth || 800;
+  const height = window.innerHeight || root.clientHeight || 800;
+  const radius = Math.ceil(Math.sqrt(width * width + height * height));
+  const frames = function (from, to) {
+    return [
+      { clipPath: 'circle(' + from + 'px at ' + width + 'px 0px)' },
+      { clipPath: 'circle(' + to + 'px at ' + width + 'px 0px)' }
+    ];
+  };
+  const options = { duration: THEME_WIPE_MS, easing: 'linear', fill: 'both' };
+  const finish = function () {
+    themeTransitionActive = false;
+    curtain.remove();
+  };
+  clearTimeout(themeWipeTimer);
+  themeWipeTimer = setTimeout(finish, THEME_WIPE_MS * 2 + 240);
+  curtain.animate(frames(0, radius), options).finished.then(function () {
+    commit();
+    return curtain.animate(frames(radius, 0), options).finished;
+  }).then(finish, finish);
+}
+
+/** 兜底：不支持视图过渡的浏览器，让颜色线性过渡到新主题，而不是瞬间跳变。 */
 function startThemeFade(root) {
-  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (prefersReducedMotion()) return;
   // 先摘掉再强制重排，连续点两次也能重新走一遍过渡
   root.classList.remove('theme-fade');
   void root.offsetWidth;
   root.classList.add('theme-fade');
   clearTimeout(themeFadeTimer);
-  themeFadeTimer = setTimeout(function () { root.classList.remove('theme-fade'); }, 520);
+  themeFadeTimer = setTimeout(function () { root.classList.remove('theme-fade'); }, THEME_FADE_MS);
 }
+
 
 function applyTheme(pref, persist) {
   const next = pref === 'light' ? 'light' : 'dark';
   const root = document.documentElement;
   const changed = root.getAttribute('data-theme') !== next;
-  root.setAttribute('data-theme', next);
-  root.setAttribute('data-theme-pref', next);
-  if (changed) startThemeFade(root);
-  try {
-    localStorage.setItem(THEME_KEY, next);
-  } catch {
-    // 隐私模式写不了本地缓存，不影响本次会话
+  const request = ++themeRequest;
+  themeTarget = next;
+
+  function commit() {
+    if (request !== themeRequest) return; // 后面的点击已经接管，旧的过渡回调不再落地
+    root.setAttribute('data-theme', next);
+    root.setAttribute('data-theme-pref', next);
+    if (changed) startThemeFade(root);
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch {
+      // 隐私模式写不了本地缓存，不影响本次会话
+    }
+    const button = document.querySelector('[data-action="theme-toggle"]');
+    if (button) {
+      // 单按钮：显示当前主题的图标，点击切到另一个
+      const other = next === 'light' ? 'dark' : 'light';
+      const hint = '当前' + themeLabel(next) + '主题，点击切换到' + themeLabel(other) + '主题';
+      fill(button, iconNode(next === 'light' ? 'sun' : 'moon'));
+      button.setAttribute('aria-label', hint);
+      button.setAttribute('title', hint);
+    }
   }
-  const button = document.querySelector('[data-action="theme-toggle"]');
-  if (button) {
-    // 单按钮：显示当前主题的图标，点击切到另一个
-    const other = next === 'light' ? 'dark' : 'light';
-    const hint = '当前' + themeLabel(next) + '主题，点击切换到' + themeLabel(other) + '主题';
-    fill(button, iconNode(next === 'light' ? 'sun' : 'moon'));
-    button.setAttribute('aria-label', hint);
-    button.setAttribute('title', hint);
+
+  // 支持视图过渡的浏览器：旧主题截图垫底，新主题按波前从右上角扫入
+  // 主题变化：新底色从右上角扫到左下，扫满再换主题
+  if (changed) {
+    runThemeTransition(commit, next);
+  } else {
+    commit();
   }
+
   if (persist && appState.settings && appState.settings.theme !== next) {
     appState.settings.theme = next;
     api('/settings', { method: 'PUT', body: { theme: next } }).catch(function () {
@@ -4432,7 +4494,9 @@ function applyTheme(pref, persist) {
 }
 
 function toggleTheme() {
-  const next = themePreference() === 'light' ? 'dark' : 'light';
+  // 连点时以最近一次请求的主题为基准，否则两次点击会算出同一个目标
+  const current = themeTarget || themePreference();
+  const next = current === 'light' ? 'dark' : 'light';
   applyTheme(next, true);
 }
 
