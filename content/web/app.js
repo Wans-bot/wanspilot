@@ -990,6 +990,10 @@ function hasFilters(filters) {
 const YEAR_RANGES = [
   { value: '', label: '不限' },
   { value: '2020-2029', label: '2020 年代' },
+  ...Array.from({ length: Math.max(0, Number(shanghaiDate().slice(0, 4)) - 2019) }, function (_, index) {
+    const year = String(2020 + index);
+    return { value: year + '-' + year, label: year };
+  }),
   { value: '2010-2019', label: '2010 年代' },
   { value: '2000-2009', label: '2000 年代' },
   { value: '1990-1999', label: '1990 年代' },

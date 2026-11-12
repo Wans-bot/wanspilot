@@ -196,6 +196,25 @@ try {
   await page.click('[data-action="filter-reset"]');
   await page.waitForFunction(()=>!location.hash.includes('genre='));
   record('compact filters navigate and reset selected conditions');
+  await pause(250);
+  await page.waitForFunction(()=>!document.querySelector('#search-hint')&&document.querySelector('[data-key="years"][data-value="2021-2021"]'));
+  if(!await page.$eval('.filter-advanced',node=>node.open))await page.click('.filter-advanced > summary');
+  const currentShanghaiYear=Number(new Intl.DateTimeFormat('en',{timeZone:'Asia/Shanghai',year:'numeric'}).format(new Date()));
+  const yearLabels=await page.$$eval('[data-key="years"]',nodes=>nodes.map(node=>node.textContent));
+  for(let year=2020;year<=currentShanghaiYear;year++)assert.ok(yearLabels.includes(String(year)));
+  assert.ok(!yearLabels.includes(String(currentShanghaiYear+1)));
+  for(const year of [...new Set(['2021','2022','2023',String(currentShanghaiYear)])]){
+    const requested=page.waitForRequest(req=>{const url=new URL(req.url());return url.pathname==='/api/tmdb/discover'&&url.searchParams.get('yearFrom')===year&&url.searchParams.get('yearTo')===year;});
+    await page.$eval('[data-key="years"][data-value="'+year+'-'+year+'"]',button=>button.click());await requested;
+    await page.waitForFunction(value=>document.querySelector('[data-key="years"][data-value="'+value+'-'+value+'"]')?.getAttribute('aria-pressed')==='true',{},year);
+    assert.ok((await page.$eval('.selected-filters',node=>node.textContent)).includes(year));
+  }
+  await page.screenshot({path:path.join(out,'search-specific-years-desktop.png')});
+  await page.click('[data-key="years"][data-value="2020-2029"]');
+  await page.waitForFunction(()=>location.hash.includes('years=2020-2029'));
+  await page.click('[data-action="filter-reset"]');await page.waitForFunction(()=>!location.hash.includes('years='));
+  record('search exposes individual years through Shanghai current year and sends exact-year ranges');
+
   await page.evaluate(()=>{location.hash='#/tasks';}); await page.waitForSelector('[data-action="task-pause"]');
   await page.click('[data-action="task-pause"]');
   await page.waitForFunction(()=>document.querySelector('.task')?.textContent.includes('任务已暂停'));
