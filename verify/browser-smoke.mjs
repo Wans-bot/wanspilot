@@ -29,6 +29,8 @@ const fallbackHome = { blocks: ['热门电影', '热门剧集', '热门动漫', 
 const home = process.env.WP_HOME_FIXTURE ? JSON.parse(fs.readFileSync(process.env.WP_HOME_FIXTURE)) : fallbackHome;
 const cards = home.blocks[0].items;
 const subs = cards.slice(0, 5).map((film, i) => ({ ...film, id: 'fixture-sub-' + i, tmdbId: film.id, state: i === 2 ? 'error' : 'watching', enabled: true, autoDownload: true, downloadedKeys: [], pendingKeys: i === 0 ? ['S01E01'] : [], qualityPreference: '1080p', minSeeders: 5, maxSizeGB: 30, lastMessage: i === 2 ? '连接超时，稍后重试' : '等待更新' }));
+subs[3] = { ...subs[3], id:'calendar-sub-2', type:'tv', downloadedKeys:['S01E01','S01E01'], totalEpisodes:3 };
+subs[4] = { ...subs[4], id:'unknown-air-date', type:'tv', downloadedKeys:[], totalEpisodes:0 };
 const task = { id: 'a'.repeat(40), infoHash: 'a'.repeat(40), name: 'Example.Movie.2026.1080p.WEB-DL', sizeBytes: 8 * 1024 ** 3, downloadedBytes: 3.2 * 1024 ** 3, progress: .4, state: 'downloading', rateDown: 6.5 * 1024 ** 2, rateUp: 512000, peers: 18, etaSeconds: 780, addedAt: new Date().toISOString(), savePath: '/downloads', files: [] };
 const tasks = { items: [task, { ...task, id: 'b'.repeat(40), name: 'Example.Series.S01E01.2160p', state: 'seeding', progress: 1, rateDown: 0 }], stats: { active: 2, completed: 1, rateDown: task.rateDown, rateUp: task.rateUp, totalSizeBytes: task.sizeBytes * 2 } };
 const status = { tmdbOk: true, tmdbKeySet: true, tmdbImageOk: true, tmdbMessage: 'TMDB 连接正常', tmdbImageMessage: '海报源连接正常', downloadDirOk: true, downloadDirMessage: '未挂载下载目录', engineReady: false, sources: [{ id: 'fixture', name: '示例索引源', ok: true, latencyMs: 128 }] };
@@ -45,6 +47,16 @@ async function install(page) {
       if (url.origin !== base) return req.continue();
       const json = body => req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
       if (url.pathname === '/api/settings' && req.method() === 'PUT' && JSON.parse(req.postData()).qbUsername === 'SAVE-FAILURE') return req.respond({ status: 507, contentType: 'application/json', body: '{"error":"测试：磁盘不可写"}' });
+      if (url.pathname === '/api/settings/test') {
+        const body=JSON.parse(req.postData());
+        if(body.kind==='qb') return json({ok:body.qbUsername!=='FAIL-PROBE',message:body.qbUsername==='FAIL-PROBE'?'模拟连接失败':'qB 4.6 连接正常'});
+        return json({...status,tmdbImageOk:false,tmdbImageMessage:'模拟图片源不可用'});
+      }
+      if (/^\/api\/tasks\/[^/]+\/(pause|resume)$/.test(url.pathname)) {
+        const item=tasks.items.find(item=>item.id===url.pathname.split('/')[3]);
+        item.state=url.pathname.endsWith('/pause')?'paused':'downloading';
+        return json({task:item});
+      }
       if (url.pathname === '/api/settings/status') { await pause(1500); return json(status); }
       if (url.pathname === '/api/tmdb/home') return json(home);
       if (url.pathname === '/api/tmdb/genres') return json({ genres: [{ id: 18, name: '剧情' }, { id: 28, name: '动作' }] });
@@ -128,6 +140,48 @@ try {
   await page.$eval('[name=qbUsername]', n => { n.value = 'SAVED-TEST'; n.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.click('#settings-form [type=submit]'); await page.waitForFunction(() => document.querySelector('#save-state')?.textContent === '所有更改已保存');
   assert.equal(await page.$eval('[name=qbPassword]', n => n.value), ''); record('save keeps secret masked');
+  await page.click('[data-action="test-qb"]');
+  await page.waitForFunction(()=>document.querySelector('#qb-test-result')?.dataset.state==='ok');
+  await page.$eval('[name=qbUsername]',n=>{n.value='FAIL-PROBE';});
+  await page.click('[data-action="test-qb"]');
+  await page.waitForFunction(()=>document.querySelector('#qb-test-result')?.textContent.includes('模拟连接失败'));
+  record('qB inline connection success and failure');
+  await page.evaluate(()=>{location.hash='#/settings?tab=tmdb';}); await page.waitForSelector('[data-section="tmdb"]');
+  await page.click('[data-section="tmdb"] [data-kind="tmdb"]');
+  await page.waitForFunction(()=>document.querySelector('[data-section="tmdb"] .connection-result')?.dataset.state==='ok');
+  await page.click('[data-section="tmdb"] [data-kind="image"]');
+  await page.waitForFunction(()=>document.querySelector('[data-section="tmdb"] .connection-result')?.textContent.includes('模拟图片源不可用'));
+  assert.equal(await page.$eval('[data-section="tmdb"] .connection-result',n=>n.dataset.state),'error');
+  await page.click('[data-section="tmdb"] details > summary');
+  await page.screenshot({path:path.join(out,'settings-network-expanded.png')});
+  record('TMDB and image tests report independent results');
+  await page.evaluate(()=>{location.hash='#/search';}); await page.waitForSelector('.filter-common select');
+  await page.select('select[aria-label="风格"]','18');
+  await page.waitForFunction(()=>location.hash.includes('genre=18')&&document.querySelector('.selected-filter')?.textContent.includes('剧情'));
+  await page.click('.filter-advanced > summary');
+  await page.screenshot({path:path.join(out,'search-advanced.png')});
+  await page.click('[data-action="filter-reset"]');
+  await page.waitForFunction(()=>!location.hash.includes('genre='));
+  record('compact filters navigate and reset selected conditions');
+  await page.evaluate(()=>{location.hash='#/tasks';}); await page.waitForSelector('[data-action="task-pause"]');
+  await page.click('[data-action="task-pause"]');
+  await page.waitForFunction(()=>document.querySelector('.task')?.textContent.includes('任务已暂停'));
+  await page.click('.task [data-action="task-resume"]');
+  await page.waitForFunction(()=>document.querySelector('.task')?.textContent.includes('任务已继续'));
+  assert.equal(await page.$eval('.task [role="progressbar"]',n=>Number(n.getAttribute('aria-valuenow'))),40);
+  record('download pause resume and accessible progress');
+  await page.evaluate(()=>{location.hash='#/subscribe?type=tv';}); await page.waitForSelector('.sub-card__schedule');
+  await page.waitForFunction(()=>[...document.querySelectorAll('.sub-card__schedule')].some(n=>n.textContent.includes('S01 E02')));
+  assert.ok((await page.$eval('[data-id="calendar-sub-2"] .sub-card__progress',n=>n.textContent)).includes('已下载 1 / 已播 3 集'));
+  assert.equal(await page.$eval('[data-id="unknown-air-date"] .sub-card__schedule',n=>n.textContent),'本月暂无后续播出计划');
+  await page.screenshot({path:path.join(out,'subscriptions-tv-desktop.png')});
+  record('TV subscriptions use unique downloaded counts and known calendar dates');
+  await page.evaluate(()=>{location.hash='#/home';}); await page.waitForSelector('.feature__image');
+  const responsive=await page.$eval('.feature__image',n=>({srcset:n.srcset,sizes:n.sizes}));
+  assert.ok(responsive.srcset.includes('w1280')); assert.ok(responsive.sizes);
+  await page.evaluate(()=>{const img=document.querySelector('.rail .card img');img.src='/missing-poster-for-acceptance.png';});
+  await page.waitForSelector('.poster__empty');
+  record('responsive backdrop and poster error fallback');
   const routes = [['search', '#/search', '.grid .card'], ['detail', '#/detail/movie/' + cards[0].id, '.hero__title'], ['resources', '#/resources/movie/1?title=Example', '.res'], ['tasks', '#/tasks', '.task'], ['subscribe', '#/subscribe', '.sub-card'], ['calendar', '#/calendar', '.cal__grid'], ['health', '#/health', '.grid--cards .panel']];
   for (const [name, hash, selector] of routes) {
     await page.evaluate(hash => { location.hash = hash; }, hash); await page.waitForSelector(selector); await checkLayout(page, name + ' desktop'); await page.screenshot({ path: path.join(out, name + '-desktop.png') });
@@ -251,6 +305,10 @@ try {
     assert.equal(await mobile.$eval('main',node=>node.inert),false);
     await mobile.setViewport({width:390,height:844,isMobile:true,hasTouch:true});
   }
+  await mobile.evaluate(()=>{location.hash='#/tasks';}); await mobile.waitForSelector('.task [role="progressbar"]');
+  assert.ok(await mobile.$eval('.task [role="progressbar"]',n=>n.getBoundingClientRect().width>=100));
+  await mobile.screenshot({path:path.join(out,'tasks-mobile-final.png')});
+  record('mobile task progress remains visible');
   await page.bringToFront();
   console.log('CHECK organizer preview');
   await page.evaluate(() => { location.hash = '#/settings?tab=files'; }); await page.waitForSelector('[data-action="organize-preview"]');

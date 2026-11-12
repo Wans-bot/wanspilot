@@ -285,18 +285,25 @@ function imageUrl(path, size) {
     + '&size=' + encodeURIComponent(size || 'w342');
 }
 
-function posterEl(path, alt, size) {
-  const url = imageUrl(path, size || 'w342');
-  if (!url) return el('span', { class: 'poster__empty', text: '暂无海报' });
-  return el('img', {
-    src: url, alt: alt, loading: 'lazy', decoding: 'async', width: '342', height: '513',
-  });
+function posterFallback(alt) {
+  return el('span', { class: 'poster__empty', role: 'img', 'aria-label': alt || '暂无海报' }, [iconNode('film'), el('span', { text: '暂无海报' })]);
 }
-
+function posterEl(path, alt, size) {
+  if (!path) return posterFallback(alt);
+  const image = el('img', {
+    src: imageUrl(path, size || 'w342'), alt: alt, loading: 'lazy', decoding: 'async', width: '342', height: '513',
+    on: { error: function (event) { event.currentTarget.replaceWith(posterFallback(alt)); } },
+  });
+  return image;
+}
+function backdropAttributes(path) {
+  return { src: imageUrl(path, 'w780'),
+    srcset: imageUrl(path, 'w780') + ' 780w, ' + imageUrl(path, 'w1280') + ' 1280w',
+    sizes: '(max-width: 860px) 100vw, (max-width: 1440px) calc(100vw - 80px), 1360px',
+    decoding: 'async', on: { error: function (event) { event.currentTarget.hidden = true; } } };
+}
 function backdropEl(path, alt) {
-  const url = imageUrl(path, 'w780');
-  if (!url) return null;
-  return el('img', { src: url, alt: alt, decoding: 'async' });
+  return path ? el('img', Object.assign(backdropAttributes(path), { alt: alt || '' })) : null;
 }
 
 function typeLabel(type) { return TYPE_LABELS[type] || '影视'; }
@@ -842,8 +849,7 @@ function featuredEl(items) {
   const type = normalizeType(item.type);
   const href = '#/detail/' + type + '/' + item.id;
   const image = item.backdropPath ? el('img', {
-    class: 'feature__image', src: imageUrl(item.backdropPath, 'w780'), alt: '',
-    fetchpriority: 'high', decoding: 'async',
+    ...backdropAttributes(item.backdropPath), class: 'feature__image', alt: '', fetchpriority: 'high',
   }) : null;
   return el('section', { class: 'feature', 'aria-label': '精选推荐' }, [
     image, el('div', { class: 'feature__veil' }),
@@ -857,7 +863,7 @@ function featuredEl(items) {
       item.originalTitle && item.originalTitle !== item.title ? el('p', { class: 'feature__original', text: item.originalTitle }) : null,
       el('p', { class: 'feature__overview', text: item.overview || '下一段值得沉浸的故事，从这里开始。' }),
       el('div', { class: 'feature__actions' }, [
-        linkEl({ class: 'btn btn--primary', href: href }, 'play', '探索这部作品'),
+        linkEl({ class: 'btn btn--primary', href: href }, 'info', '查看详情'),
         linkEl({ class: 'btn feature__secondary', href: '#/resources/' + type + '/' + item.id + resourceQuery(item, item.year) }, 'search', '寻找资源'),
       ]),
     ]),
@@ -884,15 +890,14 @@ function homeBlocksEl(data) {
   });
   const page = pageEl([
     featuredEl(featured),
-    el('div', { class: 'discovery-head' }, [
-      el('div', {}, [el('span', { class: 'eyebrow', text: 'DISCOVER SOMETHING GREAT' }), el('h2', { text: '发现你的下一部挚爱' })]),
-      linkEl({ class: 'discovery-search', href: '#/search' }, 'search', '搜索电影、剧集、动漫…'),
-    ]),
-    el('nav', { class: 'discovery-links', 'aria-label': '快速探索' }, [
-      linkEl({ href: '#/search?type=movie&category=popular' }, 'film', '热门电影'),
-      linkEl({ href: '#/search?type=tv&category=popular' }, 'tv', '人气剧集'),
-      linkEl({ href: '#/search?type=anime' }, 'star', '动画世界'),
-      linkEl({ href: '#/search?type=movie&category=top_rated' }, 'bookmark', '高分佳作'),
+    el('div', { class: 'discovery-bar' }, [
+      el('nav', { class: 'discovery-links', 'aria-label': '快速探索' }, [
+        linkEl({ href: '#/search?type=movie&category=popular' }, 'film', '热门电影'),
+        linkEl({ href: '#/search?type=tv&category=popular' }, 'tv', '人气剧集'),
+        linkEl({ href: '#/search?type=anime' }, 'star', '动漫'),
+        linkEl({ href: '#/search?type=movie&category=top_rated' }, 'bookmark', '高分佳作'),
+      ]),
+      linkEl({ class: 'discovery-search', href: '#/search' }, 'search', '搜索影视'),
     ]),
     blocks.map(function (block, index) {
       const type = block.type === 'movie' ? 'movie' : (block.type === 'anime' ? 'anime' : 'tv');
@@ -1050,35 +1055,39 @@ function typeRowEl(state, searching) {
   }));
 }
 
-/** 筛选条件全部平铺成 chips：类型、风格、语种、年份、评分、排序，不用下拉。 */
+/** 常用条件紧凑展示，较少使用的条件放入原生折叠面板。 */
 function filterBarEl(state, genres, searching) {
-  const genreOptions = [{ value: '', label: '全部' }].concat(
-    genres.map(function (g) { return { value: String(g.id), label: g.name }; }),
-  );
-  const langOptions = [{ value: '', label: '全部' }].concat(
-    filterOptions.languages.map(function (l) { return { value: l.code, label: l.name }; }),
-  );
-  const ratingOptions = [{ value: '', label: '不限' }].concat(
-    RATING_OPTIONS.map(function (r) { return { value: r, label: r + ' 分以上' }; }),
-  );
-  const sortOptions = SORT_OPTIONS.map(function (entry) { return { value: entry[0], label: entry[1] }; });
-  const box = el('div', { class: 'filters' }, typeRowEl(state, searching));
-  // 关键词搜索只走 TMDB 的关键词接口，其余条件在这里筛不了，所以搜索模式下只留类型行
+  const box = el('div', { class: 'filters filters--browse' }, typeRowEl(state, searching));
   if (searching) return box;
-  box.append(
-    filterRowEl('风格', 'genre', genreOptions, state.genre),
-    filterRowEl('语种', 'lang', langOptions, state.lang),
-    filterRowEl('年份', 'years', YEAR_RANGES, state.years),
-    filterRowEl('评分', 'rating', ratingOptions, state.rating),
-    filterRowEl('排序', 'sort', sortOptions, state.sort || 'popularity'),
-  );
+  const selectFilter = function (label, key, options, current) {
+    return el('label', { class: 'filter-select' }, [el('span', { text: label }),
+      el('select', { 'aria-label': label, on: { change: function (event) {
+        navigate(searchHash(Object.assign({}, state, { [key]: event.target.value, page: 1 })));
+      } } }, options.map(function (entry) { return el('option', { value: entry.value, selected: String(current || '') === String(entry.value), text: entry.label }); })),
+    ]);
+  };
+  box.append(el('div', { class: 'filter-common' }, [
+    selectFilter('风格', 'genre', [{ value: '', label: '全部风格' }].concat(genres.map(g => ({ value: String(g.id), label: g.name }))), state.genre),
+    selectFilter('排序', 'sort', SORT_OPTIONS.map(entry => ({ value: entry[0], label: entry[1] })), state.sort || 'popularity'),
+  ]));
+  const advanced = el('details', { class: 'filter-advanced', open: Boolean(state.lang || state.years || state.rating) }, [
+    el('summary', {}, [iconNode('filter'), el('span', { text: '更多筛选' }), iconNode('chevron-down')]),
+    el('div', { class: 'filter-advanced__body' }, [
+      filterRowEl('语种', 'lang', [{ value: '', label: '全部' }].concat(filterOptions.languages.map(l => ({ value: l.code, label: l.name }))), state.lang),
+      filterRowEl('年份', 'years', YEAR_RANGES, state.years),
+      filterRowEl('评分', 'rating', [{ value: '', label: '不限' }].concat(RATING_OPTIONS.map(r => ({ value: r, label: r + ' 分以上' }))), state.rating),
+    ]),
+  ]);
+  box.append(advanced);
   if (hasFilters(state)) {
-    box.append(frowEl('', [
-      el('button', { type: 'button', class: 'chip chip--ghost', 'data-action': 'filter-reset' }, [
-        iconNode('close'),
-        el('span', { text: '清除筛选' }),
-      ]),
-    ], 'frow--reset'));
+    const selected = [];
+    const groups = { genre: genres.map(g => ({ value: String(g.id), label: g.name })), lang: filterOptions.languages.map(l => ({ value:l.code,label:l.name })), years:YEAR_RANGES, rating:RATING_OPTIONS.map(r => ({value:r,label:r+' 分以上'})), sort:SORT_OPTIONS.map(entry=>({value:entry[0],label:entry[1]})) };
+    Object.keys(groups).forEach(function (key) {
+      if (!state[key] || (key === 'sort' && state[key] === 'popularity')) return;
+      const option = groups[key].find(entry => String(entry.value) === String(state[key]));
+      if (option) selected.push(buttonEl({ class:'chip selected-filter', 'data-action':'filter-set', 'data-key':key, 'data-value':state[key], 'aria-label':'移除筛选：'+option.label },'close',option.label));
+    });
+    box.append(el('div', { class: 'selected-filters' }, [el('span', { text:'已选' }), ...selected, buttonEl({ class:'btn btn--ghost btn--sm', 'data-action':'filter-reset' },null,'重置')]));
   }
   return box;
 }
@@ -1125,8 +1134,8 @@ async function viewSearch(ctx) {
         el('p', {
           class: 'page__sub',
           text: searching
-            ? '关键词搜索按片名、原名或演员匹配；想按风格、语种、年份、评分筛，清空关键词即可浏览。'
-            : '按关键词找片，或用类型、风格、语种、年份、评分筛选；点海报上的搜索图标就能找资源。',
+            ? '搜索「' + query + '」的相关作品'
+            : '发现电影、剧集和动漫。',
         }),
       ]),
       form,
@@ -1213,32 +1222,7 @@ async function viewSearch(ctx) {
   ]);
 
   const grid = gridEl(items.map(function (item) { return mediaCardEl(item, { showType: type === 'multi' }); }));
-  fill(results, [grid, pager]);
-  // 一页 20 条常常排不满最后一行，这里从下一页补几张，做到每行数量一致
-  topUpLastRow(grid, items.length, page, totalPages, endpointFor, { showType: type === 'multi' });
-}
-
-/** 末行不满时，用下一页的头几张补满最后一行；补不齐就不动。 */
-async function topUpLastRow(grid, shownCount, page, totalPages, endpointFor, cardOptions) {
-  if (page >= totalPages || window.innerWidth < 700) return;
-  await new Promise(function (resolve) { requestAnimationFrame(function () { resolve(); }); });
-  const tops = new Map();
-  Array.prototype.forEach.call(grid.children, function (card) {
-    const top = Math.round(card.getBoundingClientRect().top);
-    tops.set(top, (tops.get(top) || 0) + 1);
-  });
-  const columns = tops.size ? Math.max.apply(null, Array.from(tops.values())) : 0;
-  if (columns < 2) return;
-  const deficit = (columns - (shownCount % columns)) % columns;
-  if (!deficit) return;
-  try {
-    const next = await cachedApi(endpointFor(page + 1));
-    const extra = (next && Array.isArray(next.items) ? next.items : []).slice(0, deficit);
-    if (extra.length < deficit) return;
-    extra.forEach(function (item) { grid.append(mediaCardEl(item, cardOptions || {})); });
-  } catch {
-    // 补不满就保持原样，不影响已经显示的结果
-  }
+  fill(results, [el('div', { class: 'results-heading', role: 'status' }, [el('span', { text: searching ? '搜索结果' : '为你发现' }), el('span', { text: Number.isFinite(Number(data.totalResults)) ? '共 ' + Number(data.totalResults).toLocaleString() + ' 部作品' : '第 ' + page + ' 页' })]), grid, pager]);
 }
 
 /* ---------- 视图：详情 ---------- */
@@ -1998,13 +1982,10 @@ function taskRowEl(task) {
   const canPause = ACTIVE_TASK_STATES.indexOf(task.state) >= 0;
   return frag([
     el('div', { class: 'task__head' }, [
-      el('h3', { class: 'task__name', text: task.name || task.id }),
+      el('h3', { class: 'task__name', title: task.name || task.id, text: task.name || task.id }),
       el('span', { class: classNames('chip', 'chip--' + state.kind), text: state.label }),
     ]),
-    el('div', { class: classNames('bar', barKind) }, el('i', {
-      'data-progress': true,
-      style: 'width:' + percent + '%',
-    })),
+    el('div', { class: 'task__progress' }, [el('div', { class: classNames('bar', barKind), role:'progressbar', 'aria-label':'下载进度', 'aria-valuemin':'0', 'aria-valuemax':'100', 'aria-valuenow':percent }, el('i', { 'data-progress': true, style: 'width:' + percent + '%' })), el('span', { class:'task__percent', 'data-percent':true, text:percent+'%' })]),
     el('div', { class: 'task__meta' }, [
       el('span', { 'data-size': true, text: fmtBytes(done) + ' / ' + fmtBytes(total) + '（' + percent + '%）' }),
       el('span', { 'data-rate': true, text: '↓ ' + fmtRate(task.rateDown) }),
@@ -2012,7 +1993,7 @@ function taskRowEl(task) {
       el('span', { 'data-eta': true, text: '剩余 ' + fmtSeconds(task.etaSeconds) }),
     ]),
     el('div', { class: 'task__foot' }, [
-      el('span', { class: 'task__path', text: task.savePath || '' }),
+      el('details', { class:'task__details' }, [el('summary', { text:'详情' }), el('p', { class: 'task__path', text: task.savePath || '未提供保存目录' })]),
       el('div', { class: 'task__actions' }, [
         canPause ? buttonEl({
           class: 'btn btn--sm', 'data-action': 'task-pause', 'data-id': task.id,
@@ -2067,7 +2048,8 @@ function paintTasks() {
     } else {
       const progress = Number(task.progress) || 0;
       const bar = node.querySelector('[data-progress]');
-      if (bar) bar.style.width = (progress * 100).toFixed(1) + '%';
+      if (bar) { bar.style.width = (progress * 100).toFixed(1) + '%'; bar.parentElement.setAttribute('aria-valuenow', (progress * 100).toFixed(1)); }
+      const percentLabel = node.querySelector('[data-percent]'); if (percentLabel) percentLabel.textContent = (progress * 100).toFixed(1) + '%';
       const size = node.querySelector('[data-size]');
       if (size) {
         size.textContent = fmtBytes(task.downloadedBytes) + ' / ' + fmtBytes(task.sizeBytes)
@@ -2098,7 +2080,7 @@ async function viewTasks(ctx) {
     el('header', { class: 'page__head' }, [
       el('div', {}, [
         el('h1', { text: '下载任务' }),
-        el('p', { class: 'page__sub', text: '每一次进度，都离下一场好戏更近。' }),
+        el('p', { class: 'page__sub', text: '查看传输进度，管理下载与做种。' }),
       ]),
       el('div', { class: 'page__actions' }, [
         buttonEl({ class: 'btn btn--primary', 'data-action': 'import' }, 'plus', '导入任务'),
@@ -2107,6 +2089,7 @@ async function viewTasks(ctx) {
     ]),
     el('p', { id: 'live-note', class: 'live-note', hidden: true }),
     el('div', { id: 'task-stats', class: 'stats' }),
+    el('div', { class:'list-heading' }, [el('h2', { text:'全部任务' }), el('span', { id:'task-refresh-result', role:'status', text:'自动同步进度' })]),
     el('div', { id: 'task-list', class: 'task-list' }),
   ]));
 
@@ -2125,9 +2108,11 @@ async function viewTasks(ctx) {
     }
   }
 
-  currentActions.refresh = async function () {
-    try { applyTasks(await api('/tasks')); toast('已刷新', 'ok'); }
-    catch (error) { toast(error.message, 'error'); }
+  currentActions.refresh = async function (button) {
+    const note=$('#task-refresh-result'); button.disabled=true; if (note) note.textContent='正在同步…';
+    try { applyTasks(await api('/tasks')); if (note) note.textContent='已同步 · '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+    catch (error) { if (note) note.textContent=error.message; }
+    finally { if (button.isConnected) button.disabled=false; }
   };
   currentActions.import = function () { openImportDialog(''); };
   currentActions['live-retry'] = function () { live.failures = 0; startLive(); };
@@ -2136,21 +2121,25 @@ async function viewTasks(ctx) {
   currentActions['task-delete'] = function (button) { deleteTask(button.getAttribute('data-id')); };
 }
 
+function taskFeedback(id, text, error) {
+  const row = taskNodes.get(id); if (!row?.isConnected) return;
+  let note = row.querySelector('.task__feedback');
+  if (!note) { note = el('p', { class:'task__feedback', role:'status' }); row.append(note); }
+  note.textContent = text; note.classList.toggle('is-error', Boolean(error));
+}
 async function changeTask(button, what) {
-  const id = button.getAttribute('data-id');
-  button.disabled = true;
+  const id = button.getAttribute('data-id'), original = Array.from(button.childNodes).map(node=>node.cloneNode(true));
+  button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = what === 'pause' ? '暂停中…' : '恢复中…';
   try {
-    const result = await api('/tasks/' + encodeURIComponent(id) + '/' + what, { method: 'POST' });
-    if (result && result.task) {
-      const index = taskState.items.findIndex(function (item) { return item.id === result.task.id; });
-      if (index >= 0) taskState.items[index] = result.task;
+    const result = await api('/tasks/' + encodeURIComponent(id) + '/' + what, { method:'POST' });
+    if (result?.task) {
+      const index = taskState.items.findIndex(item=>item.id===result.task.id);
+      if (index>=0) taskState.items[index]=result.task;
       paintTasks();
-    }
-    toast(what === 'pause' ? '任务已暂停' : '任务已继续', 'ok');
-  } catch (error) {
-    toast(error.message, 'error');
-    button.disabled = false;
-  }
+    } else { await pollTasks(); }
+    taskFeedback(id, what === 'pause' ? '任务已暂停' : '任务已继续', false);
+  } catch (error) { taskFeedback(id, error.message, true); }
+  finally { if (button.isConnected) { button.disabled=false; button.removeAttribute('aria-busy'); button.replaceChildren(...original); } }
 }
 
 async function deleteTask(id) {
@@ -2205,7 +2194,7 @@ async function viewSubscribe(ctx) {
         el('h1', { text: '订阅' }),
         el('p', {
           class: 'page__sub',
-          text: '这里是你订阅的电影与剧集；想看每天更新哪些，去「更新日历」。',
+          text: '关注的作品、下载进度与下一次更新。',
         }),
       ]),
       el('div', { class: 'page__actions' }, [
@@ -2213,7 +2202,7 @@ async function viewSubscribe(ctx) {
           class: 'btn',
           href: API_ROOT + '/subscriptions/export',
           download: 'wanspilot-订阅.json',
-        }, 'upload', '导出到网盘'),
+        }, 'upload', '导出订阅'),
         buttonEl({ class: 'btn btn--primary', 'data-action': 'sub-import' }, 'plus', '导入订阅'),
         fileInput,
       ]),
@@ -2531,10 +2520,13 @@ function moreIconNode() {
   return svg;
 }
 
-/** 订阅就只显示海报：片名一行 + 状态，其余信息与按钮在右击菜单里。 */
+/** 订阅卡片展示已有下载记录；播出日期仅使用日历接口的真实数据。 */
 function subCardEl(item) {
   const state = item.pendingKeys?.length ? { label: '下载中 · ' + item.pendingKeys.length, kind: 'info' } : (SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' });
   const type = item.type === 'movie' ? 'movie' : 'tv';
+  const completed = new Set(item.downloadedKeys || []).size;
+  const aired = Number(item.totalEpisodes) || 0;
+  const progressText = type === 'movie' ? (completed ? '已下载' : '等待匹配资源') : (aired ? '已下载 ' + completed + ' / 已播 ' + aired + ' 集' : (completed ? '已下载 ' + completed + ' 集' : '等待首次更新'));
   const more = buttonEl({
     class: 'sub-card__more',
     'data-action': 'sub-menu',
@@ -2552,7 +2544,10 @@ function subCardEl(item) {
       posterEl(item.posterPath, (item.title || '订阅') + ' 海报', 'w342')),
     el('div', { class: 'sub-card__meta' }, [
       el('span', { class: 'card__title', text: item.title || '未命名' }),
-      chipEl(state.label, state.kind),
+      el('div', { class:'sub-card__status' }, [chipEl(item.enabled === false ? '已暂停' : state.label, item.enabled === false ? 'warn' : state.kind), el('span', { class:'sub-card__quality', text:item.qualityPreference || '1080p' })]),
+      el('p', { class:'sub-card__progress', text:progressText }),
+      type !== 'movie' ? el('p', { class:'sub-card__schedule', 'data-schedule':item.id, text:'播出时间待更新' }) : null,
+      item.state === 'error' && item.lastMessage ? el('p', { class:'sub-card__issue', title:item.lastMessage, text:item.lastMessage }) : null,
     ]),
     more,
   ]);
@@ -2650,7 +2645,7 @@ function renderSubscribeTabs(active, movieCount, tvCount) {
       'aria-current': type === active ? 'true' : null,
     }, [label, el('small', { text: count })]);
   };
-  fill(host, [entry('movie', '电影', movieCount), entry('tv', '剧集', tvCount)]);
+  fill(host, [el('div', { class:'sub-tabs__choices' }, [entry('movie','电影',movieCount),entry('tv','剧集',tvCount)]), el('span', { class:'sub-tabs__summary', text:'共 '+(movieCount+tvCount)+' 部 · '+subscriptionItems.filter(item=>item.enabled !== false).length+' 部跟踪中' })]);
 }
 
 async function loadSubscriptions(force) {
@@ -2712,6 +2707,28 @@ async function loadSubscriptions(force) {
     return;
   }
   fill(list, wanted.map(subCardEl));
+  if (active === 'tv') updateSubscriptionAirDates(list);
+}
+
+async function updateSubscriptionAirDates(list) {
+  const month=thisMonth();
+  try {
+    const data=await cachedApi('/calendar?month='+month, 5*60*1000);
+    if (!list.isConnected) return;
+    const today=data.today || localDateKey(new Date());
+    const dates=new Map();
+    (data.days || []).filter(day=>day.date>=today).sort((a,b)=>a.date.localeCompare(b.date)).forEach(function(day){
+      (day.items || []).forEach(function(item){
+        if (item.status !== 'upcoming' || dates.has(item.subscriptionId)) return;
+        dates.set(item.subscriptionId, (day.date===today?'今日':day.date.slice(5).replace('-','月')+'日')+' · S'+pad2(item.season)+' E'+pad2(item.episode));
+      });
+    });
+    list.querySelectorAll('[data-schedule]').forEach(function(node){
+      const text=dates.get(node.dataset.schedule);
+      if (text) {node.textContent=text;}
+      else {node.textContent=data.warnings?.length?'播出信息暂不可用':'本月暂无后续播出计划';}
+    });
+  } catch { /* Keep explicit unknown state; a calendar failure must not break subscriptions. */ }
 }
 
 function qualitySelectEl(name, value) {
@@ -3151,6 +3168,7 @@ function settingsFormEl(settings, highlightKey) {
     card.dataset.section = section.id;
     card.classList.toggle('is-active', section.id === settingsTab);
   });
+  organizeSettingsFields(form, settings);
   // 「自检与系统」这一区没有表单字段，保存条留在页面上只会碍事
   form.classList.toggle('is-diag', settingsTab === 'diag');
   return form;
@@ -3160,6 +3178,28 @@ function settingsFormEl(settings, highlightKey) {
 /* 设置页先用手上的数据画出来，自检结果晚一步贴上来：
    自检要现场打 TMDB 与索引源，慢的时候十几秒，不能让它挡住整页。 */
 const SELFTEST_TTL_MS = 60 * 1000;
+
+function organizeSettingsFields(form, settings) {
+  const move = function(section, names, title, subtitle) {
+    const card=form.querySelector('[data-section="'+section+'"]');
+    const fields=names.map(name=>form.elements[name]?.closest('.field')).filter(Boolean);
+    if (!card || !fields.length) return;
+    const details=el('details', {class:'settings-advanced'}, [el('summary',{},[el('span',{},[el('strong',{text:title}),el('span',{text:subtitle})]),iconNode('chevron-down')]), el('div',{class:'form-grid settings-advanced__body'},fields)]);
+    card.querySelectorAll('.form-grid').forEach(grid=>{if(!grid.children.length)grid.remove();});
+    const action=card.querySelector('.row'); card.insertBefore(details,action || null);
+  };
+  move('tmdb',['tmdbApiBase','tmdbImageBase','proxy'],'网络与镜像','接口地址、图片来源及网络代理');
+  move('qb',['qbSavePath','qbLocalPath','qbCategory'],'目录与分类','按需设置保存目录和自动整理路径');
+  const tmdb=form.querySelector('[data-section="tmdb"]');
+  tmdb.append(el('div',{class:'connection-actions'},[buttonEl({class:'btn','data-action':'test','data-kind':'tmdb'},'activity','测试连接'),buttonEl({class:'btn btn--ghost','data-action':'test','data-kind':'image'},'image','测试图片'),el('span',{class:'connection-result',role:'status',text:settings.tmdbApiKeySet?'密钥已配置 · 可测试连接':'等待配置密钥'})]));
+  const qb=form.querySelector('#qb-test-result'); if(qb){qb.classList.add('connection-result');qb.setAttribute('role','status');qb.textContent=settings.qbUrl?'地址已填写 · 可测试连接':'填写地址后测试连接';}
+}
+function inlineTestResult(button, text, state) {
+  const card=button.closest('.panel'); if(!card)return;
+  let note=card.querySelector('.connection-result');
+  if(!note){note=el('p',{class:'connection-result',role:'status'});card.append(note);}
+  note.textContent=text; note.dataset.state=state || 'pending';
+}
 
 async function viewSettings(ctx) {
   const focusKey = ctx.route.params.get('focus') === 'key';
@@ -3274,6 +3314,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
 
   const form = $('#settings-form');
   restoreSettingsDraft(form);
+  form.addEventListener('invalid',function(event){let node=event.target.parentElement;while(node&&node!==form){if(node.tagName==='DETAILS')node.open=true;node=node.parentElement;}},true);
   form.addEventListener('input', function () { settingsDirty = true; captureSettingsDraft(form); updateSaveState('有未保存的更改'); });
   form.addEventListener('change', function () { settingsDirty = true; captureSettingsDraft(form); updateSaveState('有未保存的更改'); });
   form.addEventListener('submit', async function (event) {
@@ -3322,7 +3363,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
       form.elements.qbPassword.placeholder = saved.qbPasswordSet ? '已配置 · 留空保留' : '填写 qB 密码';
       updateSaveState('所有更改已保存');
       dropStash(); viewCache.delete('/settings'); viewCache.delete('/settings/status'); viewCache.delete('/tmdb/home');
-      toast('设置已保存', 'ok');
+      message.hidden=false; message.className='settings-confirmation'; message.textContent='设置已保存，已应用当前配置。';
       api('/settings/status').then(function (status) {
         settingsStatus = status;
         if ($('#settings-form') !== form) return;
@@ -3374,7 +3415,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   currentActions['test-qb'] = async function (button) {
     const form = $('#settings-form');
     const hint = $('#qb-test-result');
-    if (hint) hint.textContent = '正在连接…';
+    if (hint) {hint.textContent='正在连接…';hint.dataset.state='pending';}
     if (button) button.disabled = true;
     try {
       const result = await api('/settings/test', {
@@ -3387,9 +3428,9 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
           ...(form.elements.clearQbPassword.checked ? { qbPassword: '' } : {}),
         },
       });
-      if (hint) hint.textContent = (result.ok ? '✓ ' : '✗ ') + (result.message || '');
+      if (hint) {hint.textContent=(result.ok?'✓ ':'✗ ')+(result.message || '');hint.dataset.state=result.ok?'ok':'error';}
     } catch (error) {
-      if (hint) hint.textContent = '✗ ' + error.message;
+      if (hint) {hint.textContent='✗ '+error.message;hint.dataset.state='error';}
     } finally {
       if (button && document.contains(button)) button.disabled = false;
     }
@@ -3404,19 +3445,23 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     }
     const sourceId = button.getAttribute('data-id');
     if (sourceId) body.id = sourceId;
-    button.disabled = true;
+    button.disabled = true; button.setAttribute('aria-busy','true');
+    inlineTestResult(button,'正在测试连接…','pending');
     try {
       const result = await api('/settings/test', { method: 'POST', body: body });
       settingsStatus = Object.assign({}, settingsStatus || {}, result || {});
       const host = $('#settings-status');
       if (host) host.replaceWith(statusBlockEl(settingsStatus));
-      const failed = result.tmdbOk === false || result.tmdbImageOk === false;
-      toast(failed ? '测试完成，请查看未通过的项目' : '测试通过', failed ? 'error' : 'ok');
-    } catch (error) {
-      toast(error.message, 'error');
-    } finally {
-      if (document.contains(button)) button.disabled = false;
-    }
+      const checks = kind === 'source'
+        ? (result.sources || []).filter(source => !sourceId || source.id === sourceId).map(source => ({ok:source.ok,message:source.message || source.name}))
+        : kind === 'image' ? [{ok:result.tmdbImageOk,message:result.tmdbImageMessage}]
+        : kind === 'proxy' ? [{ok:result.tmdbOk,message:result.tmdbMessage},{ok:result.tmdbImageOk,message:result.tmdbImageMessage}]
+        : [{ok:result.tmdbOk,message:result.tmdbMessage}];
+      const passed = checks.length > 0 && checks.every(check => check.ok === true);
+      const messages = checks.filter(check => !passed ? check.ok !== true : true).map(check => check.message).filter(Boolean);
+      inlineTestResult(button, (passed ? '✓ ' : '✗ ') + (messages.join('；') || '未获得有效测试结果'), passed?'ok':'error');
+    } catch (error) { inlineTestResult(button,error.message,'error'); }
+    finally { if(button.isConnected){button.disabled=false;button.removeAttribute('aria-busy');} }
   };
   currentActions['organize-preview'] = async function (button) {
     button.disabled = true;

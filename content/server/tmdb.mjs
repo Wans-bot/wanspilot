@@ -15,7 +15,7 @@ import { Agent, ProxyAgent, fetch as undiciFetch } from 'undici';
 import { getSettings, cacheDir } from './settings.mjs';
 import { log } from './log.mjs';
 
-const IMAGE_SIZES = new Set(['w92', 'w154', 'w185', 'w342', 'w500', 'w780', 'original']);
+const IMAGE_SIZES = new Set(['w92', 'w154', 'w185', 'w342', 'w500', 'w780', 'w1280', 'original']);
 const DEFAULT_TIMEOUT_MS = 20000;
 
 // 实测（2026-10-14，盒子侧）：出网偶发慢连接，TMDB 8 次探测有 1 次 12 秒超时，
