@@ -62,6 +62,20 @@ test('RSS caches its feed, keeps hashless releases and follows magnet redirects 
  const item=create({type:'rss',url:base+'/feed'});const source=ix.configuredSources()[0],before=feedReads;const rows=await source.run('Example');await source.run('Different');assert.equal(feedReads,before+1);assert.equal(rows[0].infoHash,'');assert.ok(rows[0].releaseId);
  const redirect=ix.parseFeed({rss:{channel:{item:{title:'Redirect',link:base+'/redirect'}}}},JSON.parse(fs.readFileSync(path.join(dir,'indexers.json'))).items[0])[0];const resolved=await ix.resolveRelease(redirect.releaseId);assert.match(resolved.magnet,/secret-pass/);assert.doesNotMatch(JSON.stringify(redirect),/secret-pass/);ix.deleteIndexer(item.id);
 });
+test('RSS channels support {query} placeholders for search-style feeds',async()=>{
+ const item=create({type:'rss',url:base+'/feed?searchstr={query}'});
+ assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'indexers.json'))).items[0].url,base+'/feed?searchstr={query}');
+ const rows=await ix.configuredSources()[0].run('流浪地球');
+ assert.equal(lastRequest.searchParams.get('searchstr'),'流浪地球');
+ assert.ok(rows[0].releaseId);
+ ix.deleteIndexer(item.id);
+});
+test('built-in releases resolve torrents without a saved channel record',async()=>{
+ const id=ix.registerRelease({key:'mikan',url:base+'/torrent'});
+ assert.deepEqual(Buffer.from((await ix.resolveRelease(id)).torrentBase64,'base64'),validTorrent);
+ assert.equal(ix.registerRelease({key:'mikan',url:base+'/torrent'}),id);
+ await assert.rejects(ix.resolveRelease('missing-builtin'),e=>e.statusCode===410);
+});
 test('XML failures and oversized responses are contained without returning upstream secrets',async()=>{
  for(const endpoint of ['bad','dtd','large','error']){const item=create({url:base+'/'+endpoint});const result=await ix.testIndexer(item.id);assert.equal(result.ok,false);assert.doesNotMatch(result.message,/test-secret/);ix.deleteIndexer(item.id);}
 });

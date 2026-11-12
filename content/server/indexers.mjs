@@ -19,14 +19,14 @@ function normalize(input,previous={}){
  const type=String(input.type ?? previous.type ?? 'torznab');if(!['torznab','rss'].includes(type))throw fail('仅支持 Torznab 或 RSS');
  const name=String(input.name ?? previous.name ?? '').trim();if(!name||name.length>60)throw fail('名称需为 1–60 个字符');
  const rawUrl=String(input.url || previous.url || '').trim();if(rawUrl.length>8192)throw fail('地址过长');
- const url=validUrl(rawUrl);url.hash='';
+ const templated=rawUrl.includes('{query}');const url=validUrl(templated?rawUrl.replaceAll('{query}','wp-query-token'):rawUrl);url.hash='';
  let apiKey=input.clearApiKey?'':String(input.apiKey || previous.apiKey || '').trim();
  if(type==='torznab'){
   if(!input.clearApiKey&&url.searchParams.has('apikey'))apiKey=url.searchParams.get('apikey');
   for(const key of ['apikey','t','q','offset','limit'])url.searchParams.delete(key);
  }
  if(apiKey.length>512)throw fail('API Key 过长');
- return {id:previous.id || 'custom_'+crypto.randomUUID(),name,type,url:url.href,apiKey,enabled:input.enabled===undefined?previous.enabled!==false:input.enabled===true,revision:crypto.randomUUID(),createdAt:previous.createdAt || new Date().toISOString(),lastTest:previous.lastTest || null};
+ return {id:previous.id || 'custom_'+crypto.randomUUID(),name,type,url:templated?url.href.replaceAll('wp-query-token','{query}'):url.href,apiKey,enabled:input.enabled===undefined?previous.enabled!==false:input.enabled===true,revision:crypto.randomUUID(),createdAt:previous.createdAt || new Date().toISOString(),lastTest:previous.lastTest || null};
 }
 function publicItem(item){return {id:item.id,name:item.name,type:item.type,host:new URL(item.url).host,enabled:item.enabled,apiKeySet:Boolean(item.apiKey),urlSet:true,lastTest:item.lastTest};}
 export function initIndexers(dir){store=new JsonStore(path.join(dir,'indexers.json'),{items:[]});releases.clear();rssCache.clear();return listIndexers();}
@@ -51,10 +51,18 @@ async function readBounded(response,limit){
 }
 function parseXml(xml){if(/<!DOCTYPE|<!ENTITY/i.test(xml))throw fail('不支持包含 DTD 或实体声明的 XML',502);if(XMLValidator.validate(xml)!==true)throw fail('返回内容不是有效的 RSS/Torznab XML',502);let data;try{data=parser.parse(xml);}catch{throw fail('XML 解析失败',502);}if(data.error)throw fail('索引服务返回错误（代码 '+String(data.error['@_code'] || '未知').replace(/[^\d]/g,'').slice(0,8)+'），请检查 API Key 和访问权限',502);return data;}
 async function fetchXml(item,query,caps=false){
- const url=validUrl(item.url);if(item.type==='torznab'){url.searchParams.set('t',caps?'caps':'search');if(!caps){url.searchParams.set('q',query || '');url.searchParams.set('limit','100');}if(item.apiKey)url.searchParams.set('apikey',item.apiKey);}
- let response;try{response=await httpFetch(url.href,{timeoutMs:9000,attempts:1,headers:{accept:'application/rss+xml, application/xml, text/xml'},settings:{...getSettings(),proxy:''}});}catch{throw fail('无法连接或请求超时，请检查 NAS 地址和端口',502);}
+ const templated=item.url.includes('{query}');const url=validUrl(templated?item.url.replaceAll('{query}','wp-query-token'):item.url);if(item.type==='torznab'){url.searchParams.set('t',caps?'caps':'search');if(!caps){url.searchParams.set('q',query || '');url.searchParams.set('limit','100');}if(item.apiKey)url.searchParams.set('apikey',item.apiKey);}
+ const target=templated&&!caps?url.href.replaceAll('wp-query-token',encodeURIComponent(query||'')):url.href;
+ let response;try{response=await httpFetch(target,{timeoutMs:9000,attempts:1,headers:{accept:'application/rss+xml, application/xml, text/xml'},settings:{...getSettings(),proxy:''}});}catch{throw fail('无法连接或请求超时，请检查 NAS 地址和端口',502);}
  if(!response.ok){await response.body?.cancel();throw fail('索引源 HTTP '+response.status+(response.status===401||response.status===403?'，请检查 API Key 或权限':''),502);}
  const xml=(await readBounded(response,MAX_XML)).toString('utf8');return parseXml(xml);
+}
+export function registerRelease({key,url,infoHash=''}){
+ const hash=crypto.createHash('sha256').update('builtin\0'+key+'\0'+url).digest('hex');
+ const previous=releases.get(hash);if(previous&&previous.until>Date.now())return previous.id;
+ if(releases.size>=2000)releases.delete(releases.keys().next().value);
+ const entry={id:crypto.randomUUID(),indexerId:'builtin',revision:key,url,infoHash:String(infoHash||'').toLowerCase(),builtin:true,until:Date.now()+30*60000};
+ releases.set(hash,entry);return entry.id;
 }
 function releaseFor(item,url,infoHash){
  const hash=crypto.createHash('sha256').update(item.id+'\0'+item.revision+'\0'+url).digest('hex');
@@ -95,7 +103,7 @@ export async function testIndexer(id){
 }
 export async function resolveRelease(id){
  const entry=[...releases.values()].find(value=>value.id===id&&value.until>Date.now());if(!entry)throw fail('资源链接已过期，请重新搜索后下载',410);
- const source=store?.data.items.find(item=>item.id===entry.indexerId&&item.enabled&&item.revision===entry.revision);if(!source)throw fail('该资源渠道已停用、移除或修改，请重新搜索',409);
+ const source=entry.builtin?{id:'builtin'}:store?.data.items.find(item=>item.id===entry.indexerId&&item.enabled&&item.revision===entry.revision);if(!source)throw fail('该资源渠道已停用、移除或修改，请重新搜索',409);
  let url=entry.url;
  for(let redirects=0;redirects<5;redirects++){
   if(url.startsWith('magnet:'))return {magnet:url,expectedInfoHash:entry.infoHash};

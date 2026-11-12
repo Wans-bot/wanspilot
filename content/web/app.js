@@ -1632,7 +1632,8 @@ function filteredResources() {
       const item = entry.item;
       if (resFilters.res && item.resolution !== resFilters.res) return false;
       if (!sizeInBucket(item.sizeBytes, resFilters.size)) return false;
-      if (minSeeders && Number(item.seeders || 0) < minSeeders) return false;
+      // 站点不公布做种数时不做种子数过滤，避免中文站结果被整段筛掉
+      if (minSeeders && !item.seedersUnknown && Number(item.seeders || 0) < minSeeders) return false;
       if (minTrust && Number(item.trust || 0) < minTrust) return false;
       return true;
     });
@@ -1688,7 +1689,7 @@ function resourceRowEl(item, index) {
   if (Number.isFinite(item.trust)) tags.push(trustChipEl(item));
   const meta = [
     el('span', {}, ['大小 ', el('strong', { text: item.sizeBytes ? fmtBytes(item.sizeBytes) : '未知' })]),
-    el('span', {}, ['做种 ', el('strong', { text: String(item.seeders || 0) })]),
+    el('span', {}, ['做种 ', el('strong', { text: item.seedersUnknown ? '未知' : String(item.seeders || 0) })]),
     el('span', {}, ['下载 ', el('strong', { text: String(item.leechers || 0) })]),
     el('span', { text: item.indexerName || item.indexer || '未知来源' }),
     el('span', { text: item.publishedAt ? fmtDate(item.publishedAt) : '发布时间未知' }),
@@ -1711,6 +1712,16 @@ function resourceRowEl(item, index) {
 
 
 let resourceItems = [];
+
+const SOURCE_PRESETS = [
+  { label: '选择常用预设…', name: '', type: 'torznab', url: '' },
+  { label: 'Mikan 蜜柑计划（中文动漫，直连）', name: 'Mikan 蜜柑计划', type: 'rss', url: 'https://mikanime.tv/RSS/Search?searchstr={query}' },
+  { label: '动漫花园（中文动漫，多需代理）', name: '动漫花园', type: 'rss', url: 'https://share.dmhy.org/topics/rss/rss.xml?keyword={query}' },
+  { label: 'acg.rip（中文综合，多需代理）', name: 'acg.rip', type: 'rss', url: 'https://acg.rip/.xml?term={query}' },
+  { label: 'Nyaa（动漫，需代理）', name: 'Nyaa', type: 'rss', url: 'https://nyaa.si/?page=rss&q={query}&c=0_0&f=0' },
+  { label: 'Prowlarr（本机聚合，Torznab）', name: 'Prowlarr', type: 'torznab', url: 'http://192.168.1.10:9696/1/api' },
+  { label: 'Jackett（本机聚合，Torznab）', name: 'Jackett', type: 'torznab', url: 'http://192.168.1.10:9117/api/v2.0/indexers/all/results/torznab/api' },
+];
 
 async function viewResources(ctx) {
   const type = ctx.route.segments[1] === 'movie' ? 'movie' : 'tv';
@@ -3504,16 +3515,27 @@ async function viewSources(ctx) {
   ])));
   fill(ctx.host,pageEl([
     el('header',{class:'page__head'},[el('div',{},[el('h1',{text:'资源渠道'}),el('p',{class:'page__sub',text:'手动搜索与自动订阅共用 · '+data.items.filter(i=>i.enabled).length+' 个自定义渠道已启用'})]),el('div',{class:'page__actions'},[linkEl({class:'btn',href:'#/settings?tab=tmdb'},'settings','设置'),buttonEl({class:'btn btn--primary',disabled:data.items.length>=data.limit,on:{click:()=>editSource()}},'plus','添加渠道')])]),
-    el('section',{class:'source-intro'},[el('h2',{text:'接入索引服务'}),el('p',{text:'保留现有公共索引源。可接入 Prowlarr、Jackett 提供的 Torznab API，或站点提供的 RSS 订阅链接；最多保存 '+data.limit+' 个渠道。'}),el('p',{class:'field__hint',text:'需要填写你自己的服务地址和访问凭据。RSS 只检索订阅源当前返回的条目，不提供历史全站搜索；接入渠道不代表一定有匹配资源。'})]),
+    el('section',{class:'source-intro'},[el('h2',{text:'接入索引服务'}),el('p',{text:'保留现有公共索引源。可接入 Prowlarr、Jackett 提供的 Torznab API，或站点提供的 RSS 搜索链接（地址里用 {query} 作关键词占位）；最多保存 '+data.limit+' 个渠道。'}),el('p',{class:'field__hint',text:'需要填写你自己的服务地址和访问凭据。RSS 地址含 {query} 时按关键词搜索，不含时只读取订阅源当前返回的条目；接入渠道不代表一定有匹配资源。'})]),
     data.items.length?cards:el('div',{class:'empty-state'},[iconNode('search'),el('h2',{text:'添加第一个资源渠道'}),el('p',{text:'添加你的索引服务，扩展中文剧集、动漫和电影的搜索覆盖。'})])
   ]));
   function editSource(item){
     const feedback=el('p',{class:'field__hint',role:'status','aria-live':'polite'});
+    const presetSelect=el('select',{name:'preset','aria-label':'常用源预设',on:{change:()=>{
+      const preset=SOURCE_PRESETS[presetSelect.selectedIndex];
+      if(!preset||!preset.url)return;
+      form.elements.name.value=preset.name;
+      form.elements.type.value=preset.type;
+      form.elements.url.value=preset.url;
+      // 含占位符的地址无法通过浏览器的 URL 校验，临时换成文本框
+      form.elements.url.type=/\{query\}/.test(preset.url)?'text':'url';
+      feedback.textContent=/\{query\}/.test(preset.url)?'已填入搜索型 RSS 模板，{query} 会替换成搜索关键词，可直接保存。':'已填入预设，请把地址里的主机名和端口改成你实际的索引服务。';
+    }}},SOURCE_PRESETS.map(p=>el('option',{value:p.label,text:p.label})));
     const form=el('form',{class:'form',id:'source-form'},[
+      fieldEl('常用预设',presetSelect),
       fieldEl('渠道名称',el('input',{name:'name',required:true,maxlength:60,value:item?.name || '',placeholder:'例如：家庭索引服务'})),
       fieldEl('渠道类型',el('select',{name:'type'},['torznab','rss'].map(type=>el('option',{value:type,selected:(item?.type || 'torznab')===type?true:null,text:type==='rss'?'RSS 订阅源':'Torznab（Prowlarr / Jackett）'})))),
       fieldEl('服务地址',el('input',{name:'url',type:'url',required:item?null:true,autocomplete:'off',placeholder:item?'已保存，留空保留原地址':'http://NAS:9117/api/v2.0/indexers/all/results/torznab/api'})),
-      el('p',{class:'field__hint',text:'Jackett 可复制 Torznab Feed 地址；Prowlarr 请复制单个索引器的 Torznab 地址（如 http://NAS:9696/1/api）。RSS 请填写完整订阅链接。NAS 内网地址直接连接。部分 RSS 不提供做种数，自动订阅时需按实际情况调整最低做种数。'}),
+      el('p',{class:'field__hint',text:'Jackett 可复制 Torznab Feed 地址；Prowlarr 请复制单个索引器的 Torznab 地址（如 http://NAS:9696/1/api）。RSS 请填写完整订阅链接，搜索型站点把关键词写成 {query}（如 https://mikanime.tv/RSS/Search?searchstr={query}）。NAS 内网地址直接连接。部分 RSS 不提供做种数，自动订阅时需按实际情况调整最低做种数。'}),
       fieldEl('API Key（仅 Torznab，可选）',el('input',{name:'apiKey',type:'password',autocomplete:'new-password',maxlength:512,placeholder:item?.apiKeySet?'已保存，留空保留原密钥':'索引服务提供的 API Key'})),
       item?.apiKeySet?switchEl(el('input',{name:'clearApiKey',type:'checkbox'}),'清除已保存的 API Key'):null,
       switchEl(el('input',{name:'enabled',type:'checkbox',checked:item?.enabled===false?null:true}),'启用此渠道'),

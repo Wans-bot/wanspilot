@@ -45,6 +45,13 @@ test('notifications deduplicate, persist reads, and bound history to 300',()=>{
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 
+test('resources without seeder counts ignore the minimum seeder rule',async()=>{
+ const {pickBest}=await import('../../content/server/subscriptions.mjs');
+ const sub={minSeeders:5,maxSizeGB:30,qualityPreference:'1080p'};
+ const base={title:'进击的巨人 第01集 1080p',resolution:'1080p',sizeBytes:4*1024**3,seeders:0,magnet:'magnet:?xt=urn:btih:'+'a'.repeat(40)};
+ assert.ok(pickBest([{...base,seedersUnknown:true}],sub,'tv',['进击的巨人']));
+ assert.equal(pickBest([base],sub,'tv',['进击的巨人']),null);
+});
 test('unrelated high-seeder resources cannot bypass query relevance',async()=>{
  const {matchesQueryTitle}=await import('../../content/server/sources.mjs');
  assert.equal(matchesQueryTitle('Its.Always.Sunny.in.Philadelphia.S01','无上神帝'),false);

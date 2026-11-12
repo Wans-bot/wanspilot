@@ -1,11 +1,13 @@
-import { configuredSources } from './indexers.mjs';
+import { configuredSources, registerRelease } from './indexers.mjs';
 /**
  * 索引源：查询公开种子站，归一化结果，打分排序。
  *
  * 源列表：
  * - apibay（The Pirate Bay 的公开 API）：直连可用，覆盖英文电影与剧集。
  * - torrents-csv：直连可用，覆盖部分中文内容。
+ * - mikan：中文动漫站，RSS 搜索直连可达；种子文件里才有 info hash，走 release 机制由服务端拉取。
  * - nyaa：动漫资源最全，但实测在受限网络下不可达，只有配置了「网络代理」才启用。
+ * - yts：电影站，JSON API 支持关键词搜索，同样需要代理。
  *
  * 本模块保存最近 10 分钟的结果，避免同一个关键词反复打站点。
  */
@@ -250,6 +252,78 @@ async function searchNyaa(query, context) {
   return items;
 }
 
+function unescapeXml(value) {
+  return String(value || '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([\da-f]+);/gi, (_, n) => String.fromCodePoint(Number.parseInt(n, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+/** Mikan Project：中文动漫站，RSS 搜索直连可达；种子文件里才有 info hash，用 release 机制由服务端拉取。 */
+async function searchMikan(query) {
+  const url = `https://mikanime.tv/RSS/Search?searchstr=${encodeURIComponent(query)}`;
+  const res = await httpFetch(url, { headers: { 'user-agent': UA }, timeoutMs: SOURCE_TIMEOUT_MS, attempts: SOURCE_ATTEMPTS });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const xml = await res.text();
+  const items = [];
+  for (const block of xml.split('<item>').slice(1)) {
+    const title = unescapeXml((/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/.exec(block) || [])[1] || '').trim();
+    const enclosed = unescapeXml((/<enclosure[^>]*?\burl="([^"]+)"/.exec(block) || [])[1] || '');
+    const lengthMatch = /<contentLength>(\d+)<\/contentLength>/.exec(block);
+    const description = (/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/.exec(block) || [])[1] || '';
+    const dateMatch = /<pubDate>(.*?)<\/pubDate>/.exec(block);
+    if (!title || !/^https?:\/\//i.test(enclosed)) continue;
+    const releaseId = registerRelease({ key: 'mikan', url: enclosed });
+    const item = baseItem({
+      infoHash: '',
+      title,
+      indexer: 'mikan',
+      indexerName: 'Mikan Project',
+      sizeBytes: lengthMatch ? Number(lengthMatch[1]) : parseHumanSize(description),
+      seeders: 0,
+      leechers: 0,
+      publishedAt: dateMatch ? Date.parse(dateMatch[1]) : 0,
+    });
+    // 站点不提供做种数：标记成「未知」，前端不按做种筛选，也不显示成 0
+    // releaseKey 参与去重：没有 infoHash 的源必须给一个稳定键，否则会被当作无链接条目丢弃
+    items.push({ ...item, id: `mikan:${releaseId}`, releaseId, releaseKey: `mikan:${enclosed}`, seedersUnknown: true, trustedQuery: true });
+    if (items.length >= 60) break;
+  }
+  return items;
+}
+
+/** YTS：电影站，JSON API 支持关键词搜索；受限网络下需要代理。 */
+async function searchYts(query) {
+  const url = `https://yts.mx/api/v2/list_movies.json?limit=20&query_term=${encodeURIComponent(query)}`;
+  const res = await httpFetch(url, { headers: { 'user-agent': UA, accept: 'application/json' }, timeoutMs: SOURCE_TIMEOUT_MS, attempts: SOURCE_ATTEMPTS });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const movies = data && data.data && Array.isArray(data.data.movies) ? data.data.movies : [];
+  const items = [];
+  for (const movie of movies) {
+    const base = [movie.title_long || movie.title || '', movie.year].filter(Boolean).join(' ');
+    for (const torrent of Array.isArray(movie.torrents) ? movie.torrents : []) {
+      if (!/^[a-fA-F0-9]{40}$/.test(String(torrent.hash || ''))) continue;
+      const quality = [torrent.quality, torrent.type].filter(Boolean).join(' ');
+      items.push({
+        ...baseItem({
+          infoHash: torrent.hash,
+          title: `${base} [${quality}]`.trim(),
+          indexer: 'yts',
+          indexerName: 'YTS',
+          sizeBytes: torrent.size_bytes,
+          seeders: torrent.seeds,
+          leechers: torrent.peers,
+          publishedAt: Number(movie.date_uploaded_unix) > 0 ? Number(movie.date_uploaded_unix) * 1000 : 0,
+        }),
+        trustedQuery: true,
+      });
+    }
+  }
+  return items;
+}
+
 function parseHumanSize(text) {
   const m = /([\d.]+)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB|B)/i.exec(String(text || ''));
   if (!m) return 0;
@@ -273,7 +347,7 @@ const QUALITY_RANK = { any: 0, '480p': 1, '720p': 2, '1080p': 3, '2160p': 4 };
  */
 export function trustScore(item, parsed) {
   let score = 48;
-  score += Math.min(18, Math.round(Math.log10(Math.max(1, item.seeders)) * 7));
+  score += item.seedersUnknown ? 12 : Math.min(18, Math.round(Math.log10(Math.max(1, item.seeders)) * 7));
   if (parsed.resolution) score += 4;
   if (parsed.codec) score += 4;
   if (parsed.sourceTag) score += 4;
@@ -307,7 +381,8 @@ function scoreItem(item, context) {
   }
 
   // 做种数用对数缩放，避免大量种子把画质差异压过去
-  score += Math.min(30, Math.log10(Math.max(1, item.seeders)) * 12);
+  // 站点不公布做种数时按中等活跃度计分，避免中文站结果全被压到底部
+  score += item.seedersUnknown ? 18 : Math.min(30, Math.log10(Math.max(1, item.seeders)) * 12);
 
   // 上下文匹配：季集对得上再加分
   if (context.season !== undefined && context.season !== null && item.season !== null && item.season !== context.season) {
@@ -341,7 +416,9 @@ function scoreItem(item, context) {
 const REGISTRY = [
   { id: 'apibay', name: 'The Pirate Bay', run: searchApibay },
   { id: 'torrents-csv', name: 'Torrents-CSV', run: searchTorrentsCsv },
+  { id: 'mikan', name: 'Mikan Project', run: searchMikan },
   { id: 'nyaa', name: 'Nyaa', run: searchNyaa, needsProxy: true },
+  { id: 'yts', name: 'YTS', run: searchYts, needsProxy: true },
 ];
 
 export function matchesQueryTitle(title,query) {
@@ -480,7 +557,7 @@ export async function searchResources(context) {
 
   let items = [...byHash.values()];
   // 上下文相关性粗筛：标题里必须出现关键词首词，避免站点把无关内容一起返回
-  items=items.filter(item=>matchesQueryTitle(item.title,context.q));
+  items=items.filter(item=>item.trustedQuery || matchesQueryTitle(item.title,context.q));
 
   for (const item of items) item.score = scoreItem(item, context);
   items.sort((a, b) => b.score - a.score || b.seeders - a.seeders);

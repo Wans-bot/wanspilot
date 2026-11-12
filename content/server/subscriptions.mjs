@@ -334,7 +334,8 @@ export function pickBest(candidates, item, want, expectedTitles = [], options = 
   const strictQuality = options.strictQuality || '';
   const filtered = candidates.filter((c) => {
     if ((!c.magnet&&!c.releaseId) || !matchesRules(c,item)) return false;
-    if (c.seeders < minSeeders) return false;
+    // 站点不公布做种数（seedersUnknown）时不套用最低做种数，否则中文站资源永远进不了自动下载
+    if (!c.seedersUnknown && c.seeders < minSeeders) return false;
     if (c.sizeBytes > maxBytes) return false;
     if (strictQuality && c.resolution !== strictQuality) return false;
     if (expectedTitles.length && !titleMatches(c.title, expectedTitles)) return false;
