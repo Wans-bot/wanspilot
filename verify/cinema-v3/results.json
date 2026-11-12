@@ -1,24 +1,41 @@
 {
-  "passed": 28,
+  "passed": 86,
   "fixtures": true,
-  "realArtSource": true,
+  "realArtSource": false,
   "checks": [
+    {
+      "name": "login password visibility"
+    },
+    {
+      "name": "login invalid credentials"
+    },
+    {
+      "name": "login includes local SVG illustration and field icons"
+    },
     {
       "name": "login desktop",
       "width": 1440,
       "overflow": false,
-      "heading": "好故事，值得期待。",
+      "heading": "WansPilot",
       "mainChildren": 1
+    },
+    {
+      "name": "logo transparent image and CSS",
+      "background": "rgba(0, 0, 0, 0)",
+      "alpha": 0
     },
     {
       "name": "home desktop",
       "width": 1440,
       "overflow": false,
-      "heading": "奥德赛",
+      "heading": "远方来信",
       "mainChildren": 1
     },
     {
       "name": "featured selection"
+    },
+    {
+      "name": "featured batches refresh, autoplay advances and explicit pause stops rotation"
     },
     {
       "name": "self-test preserves draft"
@@ -33,6 +50,40 @@
       "name": "save keeps secret masked"
     },
     {
+      "name": "qB inline connection success and failure"
+    },
+    {
+      "name": "TMDB and image tests report independent results"
+    },
+    {
+      "name": "compact filters navigate and reset selected conditions"
+    },
+    {
+      "name": "search exposes individual years through Shanghai current year and sends exact-year ranges"
+    },
+    {
+      "name": "download pause resume and accessible progress"
+    },
+    {
+      "name": "TV subscriptions use unique downloaded counts and known calendar dates"
+    },
+    {
+      "name": "subscription search and download stages refresh without reload and history remains visible"
+    },
+    {
+      "name": "operation logs auto load refresh and filter"
+    },
+    {
+      "name": "responsive backdrop and poster error fallback"
+    },
+    {
+      "name": "sources desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "资源渠道",
+      "mainChildren": 1
+    },
+    {
       "name": "search desktop",
       "width": 1440,
       "overflow": false,
@@ -43,7 +94,7 @@
       "name": "detail desktop",
       "width": 1440,
       "overflow": false,
-      "heading": "奥德赛",
+      "heading": "远方来信",
       "mainChildren": 1
     },
     {
@@ -71,7 +122,7 @@
       "name": "calendar desktop",
       "width": 1440,
       "overflow": false,
-      "heading": "更新日历",
+      "heading": "追剧日历",
       "mainChildren": 1
     },
     {
@@ -82,16 +133,113 @@
       "mainChildren": 1
     },
     {
+      "name": "overview desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "运行总览",
+      "mainChildren": 1
+    },
+    {
+      "name": "notifications desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "通知中心",
+      "mainChildren": 1
+    },
+    {
+      "name": "unknown seeder counts render as 未知 instead of 0"
+    },
+    {
+      "name": "source edit hides credentials, preserves blank fields and supports keyboard switches"
+    },
+    {
+      "name": "source connection result uses Shanghai time"
+    },
+    {
+      "name": "source preset fills search template with {query} and relaxes url validation"
+    },
+    {
+      "name": "source creation masks complete RSS URLs"
+    },
+    {
+      "name": "source connection failures remain visible"
+    },
+    {
+      "name": "disabling source preserves existing downloads"
+    },
+    {
+      "name": "source deletion updates page"
+    },
+    {
+      "name": "Shanghai display ignores browser zone and notification read succeeds"
+    },
+    {
+      "name": "task state filters and selected batch pause"
+    },
+    {
+      "name": "subscription selection uses small checkbox with transparent touch target"
+    },
+    {
+      "name": "subscription auto-check uses compact accessible switch"
+    },
+    {
+      "name": "subscription batch explicit selection"
+    },
+    {
+      "name": "episode manager paginates and protects active downloads"
+    },
+    {
+      "name": "calendar missing metric includes prior months and opens full backlog"
+    },
+    {
+      "name": "calendar collapses busy dates"
+    },
+    {
+      "name": "calendar expands busy dates"
+    },
+    {
+      "name": "calendar same-day episode grouping"
+    },
+    {
+      "name": "calendar day details"
+    },
+    {
+      "name": "calendar resource link preserves season and episode"
+    },
+    {
+      "name": "calendar future status filter"
+    },
+    {
+      "name": "calendar combined series filter"
+    },
+    {
+      "name": "calendar timeline desktop",
+      "width": 1440,
+      "overflow": false,
+      "heading": "追剧日历",
+      "mainChildren": 1
+    },
+    {
+      "name": "calendar ignores late old-month responses"
+    },
+    {
       "name": "home mobile",
       "width": 390,
       "overflow": false,
-      "heading": "奥德赛",
+      "heading": "远方来信",
       "mainChildren": 1
     },
     {
       "name": "mobile bottom navigation",
-      "top": 755.15625,
+      "top": 778,
       "bottom": 844
+    },
+    {
+      "name": "sources mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "资源渠道",
+      "mainChildren": 1
     },
     {
       "name": "search mobile",
@@ -104,7 +252,7 @@
       "name": "detail mobile",
       "width": 390,
       "overflow": false,
-      "heading": "奥德赛",
+      "heading": "远方来信",
       "mainChildren": 1
     },
     {
@@ -132,7 +280,7 @@
       "name": "calendar mobile",
       "width": 390,
       "overflow": false,
-      "heading": "更新日历",
+      "heading": "追剧日历",
       "mainChildren": 1
     },
     {
@@ -143,6 +291,20 @@
       "mainChildren": 1
     },
     {
+      "name": "overview mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "运行总览",
+      "mainChildren": 1
+    },
+    {
+      "name": "notifications mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "通知中心",
+      "mainChildren": 1
+    },
+    {
       "name": "settings mobile",
       "width": 390,
       "overflow": false,
@@ -150,10 +312,40 @@
       "mainChildren": 1
     },
     {
+      "name": "mobile calendar uses timeline"
+    },
+    {
+      "name": "calendar mobile filtered",
+      "width": 390,
+      "overflow": false,
+      "heading": "追剧日历",
+      "mainChildren": 1
+    },
+    {
+      "name": "calendar mobile light",
+      "width": 390,
+      "overflow": false,
+      "heading": "追剧日历",
+      "mainChildren": 1
+    },
+    {
       "name": "home mobile light",
       "width": 390,
       "overflow": false,
-      "heading": "奥德赛",
+      "heading": "远方来信",
+      "mainChildren": 1
+    },
+    {
+      "name": "light theme shares eight-pixel control radius"
+    },
+    {
+      "name": "mobile task progress remains visible"
+    },
+    {
+      "name": "subscription activity mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "订阅",
       "mainChildren": 1
     },
     {
@@ -161,6 +353,62 @@
     },
     {
       "name": "logout returns to access screen"
+    },
+    {
+      "name": "login mobile",
+      "width": 390,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login centers form and provides full width separated submit",
+      "center": 195,
+      "width": 292,
+      "buttonWidth": 292,
+      "gap": 22
+    },
+    {
+      "name": "login narrow mobile",
+      "width": 320,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login light mobile",
+      "width": 320,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login 768x1024",
+      "width": 768,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login 844x390",
+      "width": 844,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login 1024x768",
+      "width": 1024,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
+    },
+    {
+      "name": "login 390x430",
+      "width": 390,
+      "overflow": false,
+      "heading": "WansPilot",
+      "mainChildren": 1
     },
     {
       "name": "no browser JavaScript exceptions"
