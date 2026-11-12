@@ -371,7 +371,8 @@ async function handleApi(req, res, url) {
         const version = info.version || '';
         sendJson(res, 200, {
           ok: true,
-          message: version ? `已连上 qBittorrent ${version}` : '已连上 qBittorrent',
+          message: (version ? `已连上 qBittorrent ${version}` : '已连上 qBittorrent') + (info.warnings?.length ? '；' + info.warnings.join('；') : ''),
+          apiMode: info.apiMode, warnings: info.warnings,
           version,
           apiVersion: info.apiVersion || '',
         });

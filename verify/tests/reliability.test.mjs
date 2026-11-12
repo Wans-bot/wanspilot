@@ -160,6 +160,7 @@ test('organizer retries tasks whose file lists were not loaded yet', async () =>
 });
 
 const fake = http.createServer(async (req, res) => {
+  if (req.url === '/api/v2/app/version') { res.end('v5.0.3'); return; }
   if (req.url.startsWith('/api/v2/sync/maindata')) { res.end(JSON.stringify({ server_state: { free_space_on_disk: 100 * GB } })); return; }
   if (req.url.startsWith('/api/v2/torrents/info') || req.url.startsWith('/api/v2/torrents/files')) { res.end('[]'); return; }
   for await (const chunk of req) {} // consume multipart body

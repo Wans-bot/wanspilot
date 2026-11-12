@@ -1083,6 +1083,12 @@ function filterBarEl(state, genres, searching) {
   return box;
 }
 
+function mobileFilterPanel(content, label) {
+  return el('details', { class: 'filter-panel', open: !matchMedia('(max-width: 860px)').matches }, [
+    el('summary', {}, [iconNode('filter'), el('span', { text: label || '筛选条件' }), el('span', { class: 'filter-panel__hint', text: '展开 / 收起' })]), content,
+  ]);
+}
+
 async function viewSearch(ctx) {
   const params = ctx.route.params;
   const query = String(params.get('q') || '').trim();
@@ -1105,7 +1111,7 @@ async function viewSearch(ctx) {
     }),
     buttonEl({ type: 'submit', class: 'btn btn--primary' }, 'search', '搜索'),
   ]);
-  const filterHost = el('div', { class: 'filters', id: 'filter-host' }, typeRowEl(state, searching));
+  const filterHost = el('div', { class: 'filter-content', id: 'filter-host' }, typeRowEl(state, searching));
   const hint = el('div', { class: 'loading-hint', id: 'search-hint' }, [
     iconNode('loading', 'icon--spin'),
     el('span', { text: '正在加载…' }),
@@ -1125,7 +1131,7 @@ async function viewSearch(ctx) {
       ]),
       form,
     ]),
-    filterHost,
+    mobileFilterPanel(filterHost, '类型与筛选'),
     hint,
     results,
   ]));
@@ -1757,7 +1763,7 @@ async function viewResources(ctx) {
       el('p', { class: 'page__sub', text: heading }),
     ])),
     form,
-    filterHost,
+    mobileFilterPanel(filterHost, '资源筛选'),
     sourceHost,
     list,
   ]));
@@ -3245,7 +3251,13 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     ])),
     callout,
     el('div', { class: 'settings-shell' }, [
-      settingsNavEl(settingsTab),
+      el('div', { class: 'settings-navigation' }, [settingsNavEl(settingsTab), el('label', { class: 'settings-mobile-nav' }, [
+        el('span', { class: 'field__label', text: '设置分区' }),
+        el('select', { id: 'settings-section', 'aria-label': '设置分区', on: { change: function (event) {
+          const button = document.querySelector('.settings-nav__item[data-target="' + event.target.value + '"]');
+          if (button) button.click();
+        } } }, SETTINGS_SECTIONS.map(function (section) { return el('option', { value: section.id, selected: section.id === settingsTab, text: section.label }); })),
+      ])]),
       el('div', { class: 'settings__body' }, [
         settingsFormEl(settings, highlightKey),
         el('div', {
@@ -3334,6 +3346,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     const target = button && button.getAttribute('data-target');
     if (!target || !settingsSectionExists(target)) return;
     settingsTab = target;
+    const sectionPicker = $('#settings-section'); if (sectionPicker) sectionPicker.value = target;
     document.querySelectorAll('.settings-nav__item').forEach(function (item) {
       const isActive = item.getAttribute('data-target') === target;
       item.classList.toggle('is-active', isActive);
@@ -3781,6 +3794,8 @@ function openModal(options) {
   const root = $('#modal-root');
   const previous = document.activeElement;
   root.hidden = false;
+  document.body.classList.add('has-modal');
+  document.querySelector('.topbar').inert = true; document.querySelector('main').inert = true;
   const panel = el('div', {
     class: 'modal modal--' + (options.size || 'md'),
     role: 'dialog',
@@ -3805,6 +3820,14 @@ function openModal(options) {
   modalOnClose = options.onClose || null;
   modalPreviousFocus = previous;
   const onKey = function (event) {
+    if (event.key === 'Tab') {
+      const nodes = Array.from(panel.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')).filter(function (node) { return !node.disabled && node.getClientRects().length; });
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (!first) { event.preventDefault(); panel.focus(); }
+      else if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel)) { event.preventDefault(); first.focus(); }
+      return;
+    }
     if (event.key !== 'Escape') return;
     event.stopPropagation();
     closeModal();
@@ -3813,7 +3836,7 @@ function openModal(options) {
   root.modalKeyHandler = onKey;
 
   const focusTarget = panel.querySelector('input, textarea, select, button:not([data-close])');
-  (focusTarget || panel).focus();
+  (matchMedia('(max-width: 860px)').matches ? panel : (focusTarget || panel)).focus({ preventScroll: true });
   if (options.onMount) options.onMount(panel);
   return panel;
 }
@@ -3829,6 +3852,8 @@ function closeModal() {
     root.modalKeyHandler = null;
   }
   root.hidden = true;
+  document.body.classList.remove('has-modal');
+  document.querySelector('.topbar').inert = false; document.querySelector('main').inert = false;
   root.replaceChildren();
   modalActions = {};
   const onClose = modalOnClose;
@@ -3836,7 +3861,7 @@ function closeModal() {
   const previous = modalPreviousFocus;
   modalPreviousFocus = null;
   if (previous && document.contains(previous) && previous.focus) {
-    try { previous.focus(); } catch { /* 元素已不可聚焦 */ }
+    try { previous.focus({ preventScroll: true }); } catch { /* 元素已不可聚焦 */ }
   }
   if (onClose) onClose();
 }
@@ -3887,7 +3912,24 @@ function takeOpenFileParam() {
   try { return decodeURIComponent(raw); } catch { return raw; }
 }
 
+function syncMobileViewport() {
+  const viewport = window.visualViewport;
+  const height = viewport ? viewport.height : innerHeight;
+  document.documentElement.style.setProperty('--visual-height', height + 'px');
+  document.documentElement.style.setProperty('--visual-top', (viewport ? viewport.offsetTop : 0) + 'px');
+  const editing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '');
+  document.body.classList.toggle('keyboard-open', editing && height < innerHeight * .8);
+}
 function bindGlobalEvents() {
+  syncMobileViewport();
+  matchMedia('(max-width: 860px)').addEventListener('change', function (event) {
+    document.querySelectorAll('.filter-panel').forEach(panel => { panel.open = !event.matches; });
+  });
+  window.visualViewport?.addEventListener('resize', syncMobileViewport);
+  window.visualViewport?.addEventListener('scroll', syncMobileViewport);
+  window.addEventListener('resize', syncMobileViewport);
+  document.addEventListener('focusin', syncMobileViewport);
+  document.addEventListener('focusout', function () { setTimeout(syncMobileViewport, 0); });
   document.addEventListener('click', function (event) {
     const button = event.target.closest && event.target.closest('[data-action="theme-toggle"]');
     if (button) {
@@ -3895,7 +3937,7 @@ function bindGlobalEvents() {
       toggleTheme();
     }
   });
-  window.addEventListener('hashchange', render);
+  window.addEventListener('hashchange', function () { closeModal(); render(); });
   document.addEventListener('keydown', function (event) {
     if (!accessReady || event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || event.target.isContentEditable) return;
     event.preventDefault(); navigate('#/search');
@@ -4053,6 +4095,7 @@ window.addEventListener('beforeunload', function (event) {
 });
 
 function showLogin() {
+  closeModal();
   if (document.querySelector('#access-form')) return;
   ++renderToken;
   document.body.classList.add('is-locked');

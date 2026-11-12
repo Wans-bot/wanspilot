@@ -98,7 +98,8 @@
 强制重测并返回与 `/api/settings/status` 同形的结果。TMDB / image / proxy 测试可带当前草稿 `tmdbApiKey`、`tmdbApiBase`、`tmdbImageBase`、`proxy`，仅用于本次测试，不保存。
 
 `kind: "qb"` 时请求体额外带 `qbUrl` / `qbUsername` / `qbPassword`（不传则用已保存的设置），
-返回 `{ "ok": true, "message": "已连上 qBittorrent v5.0.3", "version": "...", "apiVersion": "2.11.2" }`，
+返回 `{ "ok": true, "message": "已连上 qBittorrent v5.0.3", "version": "...", "apiVersion": "2.11.2", "apiMode": "v2", "warnings": [] }`，
+`apiMode` 为 `v2` 或 `legacy`；`warnings` 提示缺少可选统计等能力，核心任务接口正常时仍返回成功。
 连不上时 `ok: false` 且 `message` 里说明是地址不通还是认证被拒（HTTP 状态码始终是 200）。
 
 ## 3. 影视资料（TMDB）

@@ -178,6 +178,79 @@ try {
   await mobile.click('[data-action="theme-toggle"]');
   await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');
   assert.equal(await mobile.$eval('html', n => n.dataset.theme), 'light'); await mobile.screenshot({ path: path.join(out, 'home-light-mobile.png') });
+  if (process.env.WP_MOBILE_MATRIX) {
+    const audit = [];
+    const matrixRoutes = [['home', '#/home', '.feature'], ...routes, ...['tmdb','qb','filter','files','diag'].map(tab => ['settings-' + tab, '#/settings?tab=' + tab, '#settings-section'])];
+    for (const theme of ['light','dark']) {
+    await mobile.evaluate(theme => {document.documentElement.dataset.theme=theme;},theme);
+    for (const [width, height] of [[320,740],[360,780],[390,844],[430,932],[768,1024],[844,390],[1024,768]]) {
+      await mobile.bringToFront(); await mobile.setViewport({ width, height, isMobile: true, hasTouch: true });
+      for (const [name, hash, selector] of matrixRoutes) {
+        await mobile.evaluate(hash => { location.hash = hash; }, hash); await mobile.waitForSelector(selector);
+        await pause(90);
+        const row = await mobile.evaluate(() => {
+          const rect = selector => { const node = document.querySelector(selector); const r = node?.getBoundingClientRect(); return r ? { left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height } : null; };
+          const nav = rect('.nav');
+          const clipped = Array.from(document.querySelectorAll('#view input:not([type=checkbox]),#view select,#view textarea')).filter(node => {
+            const r=node.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (r.left < -1 || r.right > innerWidth + 1);
+          }).map(node => node.name || node.id);
+          const controls = Array.from(document.querySelectorAll('.topbar__tools > *')).filter(node => node.getBoundingClientRect().width);
+          const overlap = controls.some((node,index) => index && controls[index-1].getBoundingClientRect().right > node.getBoundingClientRect().left + 1);
+          return { overflow:document.documentElement.scrollWidth > innerWidth+1, clipped, nav, overlap, firstCard:rect('#search-results .card, #resource-results .res'), save:rect('.settings__savebar') };
+        });
+        if (width<=860 && name.startsWith('settings-') && name!=='settings-diag') {
+          row.saveReachable=await mobile.evaluate(()=>{
+            scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+            const r=document.querySelector('.settings__savebar').getBoundingClientRect();
+            return r.top>=60 && r.bottom<=document.querySelector('.nav').getBoundingClientRect().top;
+          });
+          await mobile.evaluate(()=>scrollTo({top:0,behavior:'instant'}));
+        }
+        audit.push({ theme,width,height,name,...row });
+        if ((width === 390 || width === 768) && theme==='light') await mobile.screenshot({path:path.join(out, 'matrix-' + width + '-' + name + '.png')});
+      }
+    }
+    }
+    fs.writeFileSync(path.join(out,'mobile-matrix.json'), JSON.stringify(audit,null,2));
+    const problems = audit.filter(row => row.overflow || row.clipped.length || row.overlap || row.saveReachable===false || (row.width<=860 && Math.abs(row.nav.bottom-row.height)>2));
+    console.log('MOBILE_MATRIX_PROBLEMS', JSON.stringify(problems));
+    assert.deepEqual(problems, []); record('mobile viewport matrix', { pages:audit.length });
+    await mobile.setViewport({width:390,height:844,isMobile:true,hasTouch:true});
+    await mobile.evaluate(() => {location.hash='#/search';}); await mobile.waitForSelector('.filter-panel');
+    assert.equal(await mobile.$eval('.filter-panel',n=>n.open),false);
+    await mobile.click('.filter-panel > summary');
+    assert.equal(await mobile.$eval('.filter-panel',n=>n.open),true);
+    await mobile.click('.filter-panel > summary');
+    await mobile.setViewport({width:1024,height:768,isMobile:true,hasTouch:true}); await pause(180);
+    assert.equal(await mobile.$eval('.filter-panel',n=>n.open),true); record('filters expand when crossing desktop breakpoint');
+    await mobile.setViewport({width:390,height:844,isMobile:true,hasTouch:true}); await pause(180);
+    assert.equal(await mobile.$eval('.filter-panel',n=>n.open),false); record('mobile filters expand and collapse');
+    await mobile.evaluate(()=>{location.hash='#/settings?tab=qb';}); await mobile.waitForSelector('#settings-section');
+    await mobile.$eval('[name=qbUsername]',n=>{n.value='MOBILE-DRAFT';n.dispatchEvent(new Event('input',{bubbles:true}));});
+    await mobile.select('#settings-section','tmdb'); await mobile.select('#settings-section','qb');
+    assert.equal(await mobile.$eval('[name=qbUsername]',n=>n.value),'MOBILE-DRAFT');record('mobile section picker preserves form drafts');
+    await mobile.$eval('.settings__savebar',n=>n.scrollIntoView({block:'center'}));await pause(800);
+    await mobile.screenshot({path:path.join(out,'settings-save-mobile.png')});
+    const saveFits=await mobile.$eval('.settings__savebar',n=>{const r=n.getBoundingClientRect();return r.top>=60&&r.bottom<=document.querySelector('.nav').getBoundingClientRect().top;});
+    assert.equal(saveFits,true);record('mobile save controls remain above navigation');
+    await mobile.evaluate(() => {location.hash='#/calendar';}); await mobile.waitForSelector('.cal-agenda');
+    await mobile.click('.cal-agenda__head .btn'); await mobile.waitForSelector('.modal'); await pause(220);
+    assert.equal(await mobile.$eval('.nav',node=>getComputedStyle(node).visibility),'hidden');
+    assert.equal(await mobile.$eval('main',node=>node.inert),true);
+    const modal = await mobile.$eval('.modal',node=>({top:node.getBoundingClientRect().top,bottom:node.getBoundingClientRect().bottom}));
+    assert.ok(modal.top>=0 && modal.bottom<=844); record('mobile modal fits and isolates navigation',modal);
+    await mobile.screenshot({path:path.join(out,'modal-mobile.png')});
+    await mobile.setViewport({width:390,height:430,isMobile:true,hasTouch:true}); await pause(200);
+    const shortModal = await mobile.$eval('.modal',node=>node.getBoundingClientRect().bottom); assert.ok(shortModal<=430);
+    await mobile.keyboard.press('Tab');
+    assert.equal(await mobile.$eval('.modal',n=>n.contains(document.activeElement)),true);
+    await mobile.keyboard.down('Shift'); await mobile.keyboard.press('Tab'); await mobile.keyboard.up('Shift');
+    assert.equal(await mobile.$eval('.modal',n=>n.contains(document.activeElement)),true);
+    record('mobile modal traps keyboard focus');
+    record('mobile modal short viewport'); await mobile.click('.modal [data-close]');
+    assert.equal(await mobile.$eval('main',node=>node.inert),false);
+    await mobile.setViewport({width:390,height:844,isMobile:true,hasTouch:true});
+  }
   await page.bringToFront();
   console.log('CHECK organizer preview');
   await page.evaluate(() => { location.hash = '#/settings?tab=files'; }); await page.waitForSelector('[data-action="organize-preview"]');

@@ -1,13 +1,13 @@
 /**
- * qBittorrent Web API v2 客户端。
+ * qBittorrent Web API v2 / legacy API 客户端。
  *
  * wanspilot 自己不下载，只把任务交给用户已有的 qBittorrent：
- * - 磁力 / 种子统一走 POST /api/v2/torrents/add
+ * - 磁力 / 种子走 v2 add 或旧版 command/download|upload
  * - 任务状态从 GET /api/v2/torrents/info 读，文件清单从 /api/v2/torrents/files 读
- * - 暂停 / 继续 / 删除对应 torrents/pause|resume|delete，5.0 的 stop|start 也兜住
+ * - 暂停 / 继续 / 删除对应 torrents/pause|resume|delete，5.x 的 stop|start 也兜住；旧接口先进行只读能力探测
  *
  * 认证：qB 默认要登录。POST /api/v2/auth/login 成功会下发会话 Cookie
- * （4.x 叫 SID，5.x 叫 QBT_SID_<端口>），后续请求原样带回。
+ * （兼容 SID 和 QBT_SID_<端口>），后续请求原样带回。
  * 后续请求带这个 cookie。用户名留空表示「免认证直连」——qB 开了
  * 「对本地主机跳过认证」或局域网白名单时可以不登录；真被拒时错误信息会提示去补账号。
  *
@@ -75,6 +75,11 @@ export class QBClient {
   #cookie = '';
 
   #loginPromise = null;
+  #apiMode = '';
+  #apiPromise = null;
+  #version = '';
+  #legacyApiVersion = null;
+  #togglePaths = new Map();
 
 
   /**
@@ -99,6 +104,8 @@ export class QBClient {
     return this.hasCredentials ? 'password' : 'anonymous';
   }
 
+  get apiMode() { return this.#apiMode; }
+
   get safeBaseUrl() {
     return this.baseUrl;
   }
@@ -120,7 +127,7 @@ export class QBClient {
       }
     }
 
-    const init = { method, headers: { ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) };
+    const init = { method, redirect: 'error', headers: { Origin: url.origin, Referer: this.baseUrl + '/', ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) };
     if (this.#cookie) init.headers.Cookie = this.#cookie;
     if (formData) {
       // 交给 fetch 自己算 boundary，不要手写 content-type
@@ -154,7 +161,7 @@ export class QBClient {
     }
 
     const text = await res.text();
-    const forbidden = res.status === 403 || /^\s*Forbidden\s*$/i.test(text);
+    const forbidden = res.status === 401 || res.status === 403 || /^\s*Forbidden\s*$/i.test(text);
     return { res, text, forbidden };
   }
 
@@ -168,11 +175,13 @@ export class QBClient {
       });
     }
     this.#loginPromise = (async () => {
-      const { res, text } = await this.#send('/api/v2/auth/login', {
+      this.#cookie = '';
+      const { res, text } = await this.#send(this.#apiMode === 'legacy' ? '/login' : '/api/v2/auth/login', {
         method: 'POST',
         form: { username: this.username, password: this.password },
       });
-      // 4.x 成功返回 200 + "Ok."，5.x 返回 204 空响应并下发 QBT_SID_<端口>；
+      if ([404, 405, 501].includes(res.status)) throw new QBError('当前 qBittorrent 不提供这个认证接口', { statusCode: res.status, kind: 'unsupported' });
+      // 兼容 200 + "Ok." 和 204 空响应，以及 SID / QBT_SID_<端口>；
       // 失败都是 200 + "Fails."。以「拿到 Cookie 且不是 Fails」为准。
       if (!this.#cookie || /^\s*Fails\.?\s*$/i.test(text) || res.status >= 400) {
         this.#cookie = '';
@@ -226,20 +235,45 @@ export class QBClient {
     return text.trim();
   }
 
-  /** 版本号形如 "v4.6.7"；用于设置页自检。 */
-  async appVersion() {
-    return this.#text('/api/v2/app/version');
+  /** Detect with read-only requests, never retry add/delete to guess API versions. */
+  async #ensureApi() {
+    if (this.#apiMode && this.#version) return;
+    if (this.#apiPromise) return this.#apiPromise;
+    const validVersion = value => /^v?\d+\.\d+(?:\.\d+)?[^\s<>]*$/.test(value);
+    this.#apiPromise = (async () => {
+      try {
+        this.#apiMode = 'v2';
+        const version = await this.#text('/api/v2/app/version');
+        if (!validVersion(version)) throw new QBError('版本接口返回的不是 qBittorrent 版本', { kind: 'protocol' });
+        this.#version = version;
+      } catch (error) {
+        if (![404, 405, 501].includes(error.statusCode) && error.kind !== 'protocol') { this.#apiMode = ''; throw error; }
+        this.#cookie = ''; this.#apiMode = 'legacy';
+        try {
+          const version = await this.#text('/version/qbittorrent');
+          if (!validVersion(version)) throw new QBError('无法识别 qBittorrent Web API，请检查地址是否指向 WebUI', { kind: 'protocol' });
+          const apiVersion = await this.#text('/version/api');
+          if (!/^\d+$/.test(apiVersion)) throw new QBError('无法识别旧版 qBittorrent API 版本', { kind: 'protocol' });
+          this.#legacyApiVersion = Number(apiVersion); this.#version = version;
+        } catch (legacyError) { this.#apiMode = ''; throw legacyError; }
+      }
+    })().finally(() => { this.#apiPromise = null; });
+    return this.#apiPromise;
   }
+
+  async appVersion() { await this.#ensureApi(); return this.#version; }
 
   /** server_state.free_space_on_disk 是 qB 所在磁盘的真实剩余空间。 */
   async mainData() {
-    return this.#json('/api/v2/sync/maindata');
+    await this.#ensureApi();
+    return this.#json(this.#apiMode === 'legacy' ? '/sync/maindata' : '/api/v2/sync/maindata');
   }
 
   async freeSpace() {
     try {
       const data = await this.mainData();
-      const value = Number(data?.server_state?.free_space_on_disk);
+      const raw = data?.server_state?.free_space_on_disk;
+      const value = raw === undefined || raw === null || raw === '' ? NaN : Number(raw);
       return Number.isFinite(value) && value >= 0 ? value : null;
     } catch (err) {
       log.warn(`[qb] 读取剩余空间失败：${err.message}`);
@@ -249,14 +283,20 @@ export class QBClient {
 
   /** hashes 为空表示全部任务，否则用 | 连接。 */
   async torrentsInfo(hashes) {
+    await this.#ensureApi();
     const list = Array.isArray(hashes) ? hashes.filter(Boolean) : [];
-    return (await this.#json('/api/v2/torrents/info', {
-      query: { hashes: list.join('|') || undefined },
-    })) || [];
+    const data = await this.#json(this.#apiMode === 'legacy' ? '/query/torrents' : '/api/v2/torrents/info', { query: { hashes: list.join('|') || undefined } });
+    if (!Array.isArray(data)) throw new QBError('qBittorrent 任务列表格式不正确，请检查 WebUI 地址', { kind: 'protocol' });
+    return data.map(item => ({ ...item, downloaded: item.downloaded ?? Math.round((Number(item.size) || 0) * (Number(item.progress) || 0)) }));
   }
 
   async torrentsFiles(hash) {
-    return (await this.#json('/api/v2/torrents/files', { query: { hash } })) || [];
+    await this.#ensureApi();
+    const data = await this.#json(this.#apiMode === 'legacy' ? '/query/propertiesFiles/' + encodeURIComponent(hash) : '/api/v2/torrents/files',
+      this.#apiMode === 'legacy' ? undefined : { query: { hash } });
+    if (data === null) return [];
+    if (!Array.isArray(data)) throw new QBError('qBittorrent 文件清单格式不正确', { kind: 'protocol' });
+    return data;
   }
 
   /**
@@ -264,6 +304,9 @@ export class QBClient {
    * @param {{magnet?: string, torrent?: Buffer, savePath?: string, category?: string, paused?: boolean}} input
    */
   async addTorrent(input) {
+    await this.#ensureApi();
+    const legacy = this.#apiMode === 'legacy';
+    if (legacy && this.#legacyApiVersion < 13 && input.paused) throw new QBError('此旧版 qBittorrent API 不支持暂停添加，请升级 qBittorrent', { statusCode: 400, kind: 'unsupported' });
     const form = new FormData();
     if (input.magnet) form.set('urls', input.magnet);
     if (input.torrent) {
@@ -271,8 +314,18 @@ export class QBClient {
     }
     if (input.savePath) form.set('savepath', input.savePath);
     if (input.category) form.set('category', input.category);
-    if (input.paused) form.set('paused', 'false'); // 交给 qB 自己的队列策略，不用 wanspilot 的自动暂停
-    const text = await this.#text('/api/v2/torrents/add', { method: 'POST', formData: form });
+    if (input.paused !== undefined) {
+      // 5.x renamed paused to stopped; both flags are harmless to older APIs.
+      form.set('paused', String(Boolean(input.paused)));
+      form.set('stopped', String(Boolean(input.paused)));
+    }
+    let options = { method: 'POST', formData: form };
+    if (legacy && this.#legacyApiVersion < 7 && input.magnet) {
+      if (input.savePath || input.category || input.paused) throw new QBError('此旧版 qBittorrent API 不支持指定保存目录、分类或暂停添加，请升级 qBittorrent', { statusCode: 400, kind: 'unsupported' });
+      options = { method: 'POST', form: { urls: input.magnet } };
+    }
+    const endpoint = legacy ? (input.torrent ? '/command/upload' : '/command/download') : '/api/v2/torrents/add';
+    const text = await this.#text(endpoint, options);
     // 4.x 成功返回空或 "Ok."，种子无效返回 "Fails."
     if (/^Fails\.?$/i.test(text)) {
       throw new QBError('qBittorrent 拒绝了这个任务：种子或磁力链接无效', { statusCode: 400, kind: 'input' });
@@ -280,18 +333,28 @@ export class QBClient {
     return true;
   }
 
-  /** 4.x 叫 pause/resume，5.0 改叫 stop/start 且保留了旧别名。先新后旧，兼容两头。 */
+  /** Missing endpoints alone trigger fallback; auth, input and server failures do not. */
   async #toggle(action, hashes) {
-    const joined = Array.isArray(hashes) ? hashes.join('|') : String(hashes || '');
+    await this.#ensureApi();
+    const values = Array.isArray(hashes) ? hashes : String(hashes || '').split('|');
+    if (this.#apiMode === 'legacy') {
+      if (values.length === 1 && values[0] === 'all') return this.#text('/command/' + (action === 'stop' ? 'pauseAll' : 'resumeAll'), { method: 'POST' });
+      for (const hash of values.filter(Boolean)) await this.#text('/command/' + (action === 'stop' ? 'pause' : 'resume'), { method: 'POST', form: { hash } });
+      return '';
+    }
     const modern = action === 'stop' ? 'stop' : 'start';
-    const legacy = action === 'stop' ? 'pause' : 'resume';
+    const older = action === 'stop' ? 'pause' : 'resume';
+    const major = Number(this.#version.replace(/^v/, '').split('.')[0]);
+    const first = this.#togglePaths.get(action) || (major >= 5 ? modern : older);
+    const other = first === modern ? older : modern;
+    const options = { method: 'POST', form: { hashes: values.join('|') } };
     try {
-      return await this.#text(`/api/v2/torrents/${modern}`, { method: 'POST', form: { hashes: joined } });
-    } catch (err) {
-      if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
-        return this.#text(`/api/v2/torrents/${legacy}`, { method: 'POST', form: { hashes: joined } });
-      }
-      throw err;
+      const result = await this.#text('/api/v2/torrents/' + first, options);
+      this.#togglePaths.set(action, first); return result;
+    } catch (error) {
+      if (![404, 405, 501].includes(error.statusCode)) throw error;
+      const result = await this.#text('/api/v2/torrents/' + other, options);
+      this.#togglePaths.set(action, other); return result;
     }
   }
 
@@ -304,8 +367,9 @@ export class QBClient {
   }
 
   async deleteTorrents(hashes, deleteFiles = false) {
+    await this.#ensureApi();
     const joined = Array.isArray(hashes) ? hashes.join('|') : String(hashes || '');
-    return this.#text('/api/v2/torrents/delete', {
+    return this.#text(this.#apiMode === 'legacy' ? (deleteFiles ? '/command/deletePerm' : '/command/delete') : '/api/v2/torrents/delete', {
       method: 'POST',
       form: { hashes: joined, deleteFiles: deleteFiles ? 'true' : 'false' },
     });
@@ -315,13 +379,23 @@ export class QBClient {
   async probe() {
     const startedAt = Date.now();
     const version = await this.appVersion();
-    const data = await this.mainData();
-    return {
-      ok: true,
-      version,
-      latencyMs: Date.now() - startedAt,
-      authMode: this.authMode,
-      freeBytes: Number(data?.server_state?.free_space_on_disk) || null,
+    await this.torrentsInfo(); // Core access must work even if optional disk statistics do not exist.
+    let apiVersion = '', data = null;
+    const warnings = [];
+    if (this.#apiMode === 'legacy') apiVersion = String(this.#legacyApiVersion);
+    else {
+      try { apiVersion = await this.#text('/api/v2/app/webapiVersion'); }
+      catch (error) { if (![404,405,501].includes(error.statusCode)) throw error; warnings.push('未提供 Web API 版本号'); }
+    }
+    try { data = await this.mainData(); } catch (error) {
+      if (![404,405,501].includes(error.statusCode)) throw error;
+      warnings.push('此版本不提供磁盘统计，剩余空间显示为未知');
+    }
+    const rawFree = data?.server_state?.free_space_on_disk;
+    const freeBytes = rawFree === undefined || rawFree === null || rawFree === '' ? null : Number(rawFree);
+    return { ok: true, version, apiVersion, apiMode: this.#apiMode, warnings,
+      latencyMs: Date.now() - startedAt, authMode: this.authMode,
+      freeBytes: Number.isFinite(freeBytes) && freeBytes >= 0 ? freeBytes : null,
       savePath: data?.server_state?.save_path || '',
     };
   }
