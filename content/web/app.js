@@ -45,7 +45,7 @@ const SUB_STATES = {
 
 const PAGE_TITLES = {
   home: '影视墙', search: '搜索', subscribe: '订阅', calendar: '更新日历',
-  overview:'运行总览', notifications:'通知中心', tasks: '下载任务', settings: '设置', detail: '影视详情', resources: '资源'
+  sources:'资源渠道',overview:'运行总览', notifications:'通知中心', tasks: '下载任务', settings: '设置', detail: '影视详情', resources: '资源'
 };
 
 /* ---------- 图标（全部内联 SVG，不依赖任何外域资源） ---------- */
@@ -1693,7 +1693,7 @@ function resourceRowEl(item, index) {
     el('span', { text: item.indexerName || item.indexer || '未知来源' }),
     el('span', { text: item.publishedAt ? fmtDate(item.publishedAt) : '发布时间未知' }),
   ];
-  const disabled = !item.magnet && !item.infoHash;
+  const disabled = !item.magnet && !item.infoHash && !item.releaseId;
   return el('article', { class: 'res' }, [
     el('div', { class: 'res__main' }, [
       el('h3', { class: 'res__title', text: item.title || '未命名资源' }),
@@ -1754,6 +1754,7 @@ async function viewResources(ctx) {
       el('div', { class: 'crumb' }, linkEl({ href: '#/detail/' + type + '/' + id }, 'back', '返回详情')),
       el('h1', { text: '找资源' }),
       el('p', { class: 'page__sub', text: heading }),
+      linkEl({class:'btn btn--sm',href:'#/sources'},'settings','管理资源渠道'),
     ])),
     form,
     mobileFilterPanel(filterHost, '资源筛选'),
@@ -1826,7 +1827,8 @@ async function viewResources(ctx) {
     if (!item) return;
     button.disabled = true;
     let body = null;
-    if (item.magnet) body = { magnet: item.magnet };
+    if (item.releaseId) body = {releaseId:item.releaseId};
+    else if (item.magnet) body = { magnet: item.magnet };
     else if (item.infoHash) body = { infoHash: item.infoHash };
     if (body) body.sizeBytes = Number(item.sizeBytes) || 0;
     if (!body) {
@@ -2692,7 +2694,7 @@ function subCardEl(item) {
         buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-check','data-id':item.id,disabled:item.isChecking || item.enabled===false},'search',item.isChecking?'进行中':'检查'),
       ]),
     ]),
-    el('label',{class:'sub-card__select',title:'选择订阅'},el('input',{type:'checkbox','aria-label':'选择 '+(item.title || '订阅'),checked:selectedSubscriptions.has(item.id),on:{change:e=>{if(e.target.checked)selectedSubscriptions.add(item.id);else selectedSubscriptions.delete(item.id);paintSubscriptionSelection();}}})),
+    el('label',{class:'sub-card__select',title:'选择订阅，用于批量操作'},el('input',{type:'checkbox','aria-label':'选择 '+(item.title || '订阅'),checked:selectedSubscriptions.has(item.id),on:{change:e=>{if(e.target.checked)selectedSubscriptions.add(item.id);else selectedSubscriptions.delete(item.id);paintSubscriptionSelection();}}})),
     more,
   ]);
 }
@@ -2956,7 +2958,8 @@ function fieldEl(label, control) {
 }
 
 function switchEl(control, label) {
-  return el('label', { class: 'switch' }, [control, ' ' + label]);
+  control.setAttribute('role','switch');
+  return el('label', { class: 'switch' }, [control, el('span',{text:label})]);
 }
 
 function openSubscriptionEditor(id) {
@@ -2984,7 +2987,7 @@ function openSubscriptionEditor(id) {
     subscriptionRulesFields(item),
     switchEl(el('input', { type: 'checkbox', name: 'autoDownload', checked: item.autoDownload ? true : null }),
       '发现资源后自动下载'),
-    switchEl(el('input', { type: 'checkbox', name: 'enabled', checked: item.enabled ? true : null }), '启用订阅'),
+    switchEl(el('input', { type: 'checkbox', name: 'enabled', checked: item.enabled ? true : null }), '自动检查更新'),
     el('div', { class: 'modal__foot' }, [
       buttonEl({ class: 'btn', 'data-close': true }, null, '取消'),
       buttonEl({ type: 'submit', class: 'btn btn--primary' }, null, '保存'),
@@ -3442,6 +3445,7 @@ function organizeSettingsFields(form, settings) {
   move('tmdb',['tmdbApiBase','tmdbImageBase','proxy'],'网络与镜像','接口地址、图片来源及网络代理');
   move('qb',['qbSavePath','qbLocalPath','qbCategory'],'目录与分类','按需设置保存目录和自动整理路径');
   const tmdb=form.querySelector('[data-section="tmdb"]');
+  tmdb.append(el('div',{class:'source-entry'},[el('div',{},[el('strong',{text:'资源渠道'}),el('p',{class:'field__hint',text:'接入 Torznab / RSS，手动搜索和自动订阅共用启用的渠道。'})]),linkEl({class:'btn',href:'#/sources'},'search','配置资源渠道')]));
   tmdb.append(el('div',{class:'connection-actions'},[buttonEl({class:'btn','data-action':'test','data-kind':'tmdb'},'activity','测试连接'),buttonEl({class:'btn btn--ghost','data-action':'test','data-kind':'image'},'image','测试图片'),el('span',{class:'connection-result',role:'status',text:settings.tmdbApiKeySet?'密钥已配置 · 可测试连接':'等待配置密钥'})]));
   const qb=form.querySelector('#qb-test-result'); if(qb){qb.classList.add('connection-result');qb.setAttribute('role','status');qb.textContent=settings.qbUrl?'地址已填写 · 可测试连接':'填写地址后测试连接';}
 }
@@ -3468,6 +3472,62 @@ function inlineTestResult(button, text, state) {
   let note=card.querySelector('.connection-result');
   if(!note){note=el('p',{class:'connection-result',role:'status'});card.append(note);}
   note.textContent=text; note.dataset.state=state || 'pending';
+}
+
+async function viewSources(ctx) {
+  fill(ctx.host,pageEl(loadingEl('正在读取资源渠道…')));
+  let data;
+  try { data=await api('/indexers'); } catch(error) {fill(ctx.host,pageEl(errorEl(error.message)));return;}
+  if(!ctx.host.isConnected)return;
+  const cards=el('div',{class:'source-grid'});
+  async function action(item,kind,button){
+    if(kind==='delete'&&!confirm('移除「'+item.name+'」？已有下载任务会保留。'))return;
+    button.disabled=true;
+    try{
+      if(kind==='test'){
+        const result=await api('/indexers/'+encodeURIComponent(item.id)+'/test',{method:'POST'});
+        toast(result.message,result.ok?'ok':'error');
+      }else await api('/indexers/'+encodeURIComponent(item.id),{method:kind==='delete'?'DELETE':'PATCH',...(kind==='toggle'?{body:{enabled:!item.enabled}}:{})});
+      if(parseRoute().name==='sources')render();
+    }catch(error){toast(error.message,'error');if(button.isConnected)button.disabled=false;}
+  }
+  data.items.forEach(item=>cards.append(el('section',{class:'source-card','data-source-id':item.id},[
+    el('div',{class:'source-card__head'},[el('h2',{text:item.name}),chipEl(item.enabled?'已启用':'已停用',item.enabled?'ok':'info')]),
+    el('p',{class:'source-card__host',text:(item.type==='rss'?'RSS':'Torznab')+' · '+item.host}),
+    el('p',{class:'field__hint',text:item.lastTest?(item.lastTest.ok?'连接正常':'连接异常')+' · '+shanghaiDateTime(item.lastTest.at)+' · '+item.lastTest.message:'尚未测试连接'}),
+    el('div',{class:'source-card__actions'},[
+      buttonEl({class:'btn btn--sm',on:{click:e=>action(item,'test',e.currentTarget)}},'activity','测试'),
+      buttonEl({class:'btn btn--sm',on:{click:()=>editSource(item)}},'edit','编辑'),
+      buttonEl({class:'btn btn--sm',on:{click:e=>action(item,'toggle',e.currentTarget)}},null,item.enabled?'停用':'启用'),
+      buttonEl({class:'btn btn--sm btn--ghost',on:{click:e=>action(item,'delete',e.currentTarget)}},'trash','移除')
+    ])
+  ])));
+  fill(ctx.host,pageEl([
+    el('header',{class:'page__head'},[el('div',{},[el('h1',{text:'资源渠道'}),el('p',{class:'page__sub',text:'手动搜索与自动订阅共用 · '+data.items.filter(i=>i.enabled).length+' 个自定义渠道已启用'})]),el('div',{class:'page__actions'},[linkEl({class:'btn',href:'#/settings?tab=tmdb'},'settings','设置'),buttonEl({class:'btn btn--primary',disabled:data.items.length>=data.limit,on:{click:()=>editSource()}},'plus','添加渠道')])]),
+    el('section',{class:'source-intro'},[el('h2',{text:'接入索引服务'}),el('p',{text:'保留现有公共索引源。可接入 Prowlarr、Jackett 提供的 Torznab API，或站点提供的 RSS 订阅链接；最多保存 '+data.limit+' 个渠道。'}),el('p',{class:'field__hint',text:'需要填写你自己的服务地址和访问凭据。RSS 只检索订阅源当前返回的条目，不提供历史全站搜索；接入渠道不代表一定有匹配资源。'})]),
+    data.items.length?cards:el('div',{class:'empty-state'},[iconNode('search'),el('h2',{text:'添加第一个资源渠道'}),el('p',{text:'添加你的索引服务，扩展中文剧集、动漫和电影的搜索覆盖。'})])
+  ]));
+  function editSource(item){
+    const feedback=el('p',{class:'field__hint',role:'status','aria-live':'polite'});
+    const form=el('form',{class:'form',id:'source-form'},[
+      fieldEl('渠道名称',el('input',{name:'name',required:true,maxlength:60,value:item?.name || '',placeholder:'例如：家庭索引服务'})),
+      fieldEl('渠道类型',el('select',{name:'type'},['torznab','rss'].map(type=>el('option',{value:type,selected:(item?.type || 'torznab')===type?true:null,text:type==='rss'?'RSS 订阅源':'Torznab（Prowlarr / Jackett）'})))),
+      fieldEl('服务地址',el('input',{name:'url',type:'url',required:item?null:true,autocomplete:'off',placeholder:item?'已保存，留空保留原地址':'http://NAS:9117/api/v2.0/indexers/all/results/torznab/api'})),
+      el('p',{class:'field__hint',text:'Jackett 可复制 Torznab Feed 地址；Prowlarr 请复制单个索引器的 Torznab 地址（如 http://NAS:9696/1/api）。RSS 请填写完整订阅链接。NAS 内网地址直接连接。部分 RSS 不提供做种数，自动订阅时需按实际情况调整最低做种数。'}),
+      fieldEl('API Key（仅 Torznab，可选）',el('input',{name:'apiKey',type:'password',autocomplete:'new-password',maxlength:512,placeholder:item?.apiKeySet?'已保存，留空保留原密钥':'索引服务提供的 API Key'})),
+      item?.apiKeySet?switchEl(el('input',{name:'clearApiKey',type:'checkbox'}),'清除已保存的 API Key'):null,
+      switchEl(el('input',{name:'enabled',type:'checkbox',checked:item?.enabled===false?null:true}),'启用此渠道'),
+      el('p',{class:'field__hint',text:'地址和密钥仅保存在服务端。保存后可测试连接；修改渠道后，请重新搜索资源。'}),feedback,
+      el('div',{class:'modal__foot'},[buttonEl({class:'btn','data-close':true},null,'取消'),buttonEl({class:'btn btn--primary',type:'submit'},null,'保存渠道')])
+    ]);
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();const button=form.querySelector('[type=submit]');button.disabled=true;feedback.textContent='正在保存…';
+      const fields=form.elements,body={name:fields.name.value,type:fields.type.value,url:fields.url.value.trim(),apiKey:fields.apiKey.value.trim(),enabled:fields.enabled.checked,clearApiKey:fields.clearApiKey?.checked || false};
+      try{await api('/indexers'+(item?'/'+encodeURIComponent(item.id):''),{method:item?'PATCH':'POST',body});closeModal();toast('渠道已保存','ok');if(parseRoute().name==='sources')render();}
+      catch(error){feedback.textContent=error.message;button.disabled=false;}
+    });
+    openModal({title:item?'编辑资源渠道':'添加资源渠道',body:form});
+  }
 }
 
 async function viewSettings(ctx) {
@@ -4459,6 +4519,7 @@ function showLogin() {
 }
 
 const VIEWS = {
+  sources:viewSources,
   overview:viewOverview,
   notifications:viewNotifications,
   home: viewHome,

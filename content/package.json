@@ -1,15 +1,16 @@
 {
   "name": "wanspilot-server",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "wanspilot backend runtime dependencies (shipped inside the Docker image)",
   "dependencies": {
-    "undici": "^7.16.0"
+    "fast-xml-parser": "5.12.0",
+    "undici": "^7.30.2"
   },
   "scripts": {
     "test": "node --test ../verify/tests/*.test.mjs",
-    "check": "node --check server/index.mjs && node --check server/qbittorrent.mjs && node --check web/app.js && node --check web/calendar-model.js && node --check web/time.js && node --check web/automation-model.js && node --check web/featured-model.js && node --check server/sources.mjs && node --check server/subscription-rules.mjs && node --check server/notifications.mjs",
+    "check": "node --check server/index.mjs && node --check server/qbittorrent.mjs && node --check web/app.js && node --check web/calendar-model.js && node --check web/time.js && node --check web/automation-model.js && node --check web/featured-model.js && node --check server/sources.mjs && node --check server/subscription-rules.mjs && node --check server/notifications.mjs && node --check server/indexers.mjs && node --check server/engine.mjs",
     "test:browser": "node ../verify/browser-smoke.mjs"
   },
   "devDependencies": {

@@ -1,3 +1,4 @@
+import { resolveRelease } from './indexers.mjs';
 import { selectedIds } from './subscription-rules.mjs';
 /**
  * 下载层：把任务交给用户自己的 qBittorrent，wanspilot 只做影视墙 + 订阅 + 整理。
@@ -226,7 +227,10 @@ async function refreshNextFiles() {
  * @param {string} [savePath] qB 视角的保存目录
  */
 export async function addTask(input, savePath) {
+  const privateRelease=Boolean(input.releaseId);
+  if(input.releaseId)input={sizeBytes:input.sizeBytes,...await resolveRelease(String(input.releaseId))};
   const parsed = parseInput(input);
+  if(/^[a-f0-9]{40}$/i.test(input.expectedInfoHash || '')&&parsed.hash!==input.expectedInfoHash.toLowerCase())throw badRequest('种子信息哈希与索引不一致，已停止提交');
   if (!qb?.configured) {
     const err = new Error('还没有配置 qBittorrent。请先在设置页填写 qB 的地址，再添加下载。');
     err.statusCode = 503;
@@ -235,6 +239,7 @@ export async function addTask(input, savePath) {
   if (records.has(parsed.hash) && !records.get(parsed.hash).error) {
     const err = new Error('该任务已在下载列表中');
     err.statusCode = 409;
+    err.taskId = parsed.hash;
     throw err;
   }
 
@@ -249,7 +254,7 @@ export async function addTask(input, savePath) {
     estimatedSize: Math.max(0, Number(input.sizeBytes) || 0),
     id: parsed.hash,
     hash: parsed.hash,
-    magnet: parsed.magnet,
+    magnet: privateRelease ? `magnet:?xt=urn:btih:${parsed.hash}` : parsed.magnet,
     name: '',
     savePath: String(savePath || ''),
     addedAt: new Date().toISOString(),

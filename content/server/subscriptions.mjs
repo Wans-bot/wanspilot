@@ -333,7 +333,7 @@ export function pickBest(candidates, item, want, expectedTitles = [], options = 
   const expectedYear = want === 'movie' ? Number(item.year) || 0 : 0;
   const strictQuality = options.strictQuality || '';
   const filtered = candidates.filter((c) => {
-    if (!c.magnet || !matchesRules(c,item)) return false;
+    if ((!c.magnet&&!c.releaseId) || !matchesRules(c,item)) return false;
     if (c.seeders < minSeeders) return false;
     if (c.sizeBytes > maxBytes) return false;
     if (strictQuality && c.resolution !== strictQuality) return false;
@@ -421,13 +421,13 @@ async function addToEngine(item, candidate) {
     return { ok: false, duplicate: false, reason: cap.message };
   }
   try {
-    const task = await engineAdd({ magnet: candidate.magnet, sizeBytes: candidate.sizeBytes }, getSettings().qbSavePath || '');
+    const task = await engineAdd({ ...(candidate.releaseId?{releaseId:candidate.releaseId}:{magnet:candidate.magnet}), sizeBytes: candidate.sizeBytes }, getSettings().qbSavePath || '');
     activity(item,'submitted','qBittorrent 已接受下载任务：'+candidate.title);
-    return { ok: true, duplicate: false, taskId: task?.id || candidate.infoHash || candidate.magnet.match(/btih:([a-f0-9]{40})/i)?.[1] };
+    return { ok: true, duplicate: false, taskId: task?.id || candidate.infoHash || String(candidate.magnet || '').match(/btih:([a-f0-9]{40})/i)?.[1] };
   } catch (err) {
     if (/已在下载列表/.test(err.message)) {
       log.info(`[subs] ${item.id} 候选《${candidate.title}》已在下载列表中，跳过重复添加`);
-      return { ok: true, duplicate: true, taskId: candidate.infoHash || candidate.magnet.match(/btih:([a-f0-9]{40})/i)?.[1] };
+      return { ok: true, duplicate: true, taskId: err.taskId || candidate.infoHash || String(candidate.magnet || '').match(/btih:([a-f0-9]{40})/i)?.[1] };
     }
     throw err;
   }

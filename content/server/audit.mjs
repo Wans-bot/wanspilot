@@ -9,6 +9,8 @@ export function operationFor(method, pathname) {
     'POST /api/organizer/run':'执行文件整理', 'GET /api/organizer/preview':'预览文件整理',
     'GET /api/resources':'手动搜索资源', 'GET /api/tmdb/search':'搜索影视',
   };
+  if(pathname==='/api/indexers' && method==='POST')return '添加资源渠道';
+  if(/^\/api\/indexers\/[^/]+(?:\/test)?$/.test(pathname))return method==='PATCH'?'修改资源渠道':method==='DELETE'?'移除资源渠道':method==='POST'?'测试资源渠道':null;
   if (exact[method+' '+pathname]) return exact[method+' '+pathname];
   if (/^\/api\/subscriptions\/[^/]+\/episodes$/.test(pathname) && method==='PATCH') return '调整逐集下载记录';
   if (/^\/api\/subscriptions\/[^/]+\/check$/.test(pathname) && method==='POST') return '立即检查订阅';

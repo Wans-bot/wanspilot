@@ -1,3 +1,4 @@
+import {initIndexers,listIndexers,saveIndexer,deleteIndexer,testIndexer,flushIndexers} from './indexers.mjs';
 import { selectedIds } from './subscription-rules.mjs';
 import { initNotifications, listNotifications, readNotifications, flushNotifications } from './notifications.mjs';
 import { auditOperation } from './audit.mjs';
@@ -236,6 +237,14 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, { ok: true }, { 'set-cookie': logoutCookie() }); return true;
   }
 
+  if(pathname==='/api/indexers' && method==='GET'){sendJson(res,200,listIndexers());return true;}
+  if(pathname==='/api/indexers' && method==='POST'){sendJson(res,201,saveIndexer(await readBody(req,16384)));return true;}
+  if(seg[1]==='indexers' && seg[2]){
+    const id=seg[2];
+    if(seg.length===3 && method==='PATCH'){sendJson(res,200,saveIndexer(await readBody(req,16384),id));return true;}
+    if(seg.length===3 && method==='DELETE'){const removed=deleteIndexer(id);sendJson(res,removed?200:404,removed?{ok:true}:{error:'资源渠道不存在'});return true;}
+    if(seg.length===4 && seg[3]==='test' && method==='POST'){sendJson(res,200,await testIndexer(id));return true;}
+  }
   if(pathname==='/api/notifications' && method==='GET'){listSubscriptions();const data=listNotifications();sendJson(res,200,url.searchParams.has('summary')?{unread:data.unread}:data);return true;}
   if(pathname==='/api/notifications/read' && method==='POST'){
     const body=await readBody(req);sendJson(res,200,readNotifications(body.ids===undefined?null:selectedIds(body.ids)));return true;
@@ -697,6 +706,7 @@ function shutdown(signal) {
     flushSettings();
     shutdownSubscriptions();
     flushNotifications();
+    flushIndexers();
     shutdownEngine();
   } catch (err) {
     log.warn(`[app] 关闭下载引擎出错: ${err.message}`);
@@ -714,6 +724,7 @@ function main() {
   setInterval(cleanCache, 30 * 60_000).unref();
   log.info('[auth] 已启用访问保护，登录方式：' + (authMode() === 'password' ? '账号密码' : '访问令牌'));
   const settings = initSettings();
+  initIndexers(DATA_DIR);
   try {
     initEngine(DATA_DIR);
     startTicker();

@@ -312,3 +312,13 @@ test('source raw queries coalesce, cache across episodes and back off after 429'
  let failures=0;const throttled={id:'test-429',run:async()=>{failures++;throw new Error('HTTP 429');}};
  await assert.rejects(querySource(throttled,'a'),/429/);await assert.rejects(querySource(throttled,'b'),/冷却/);assert.equal(failures,1);
 });
+
+test('automatic subscriptions forward opaque source releases and retain pending task identity',async()=>{
+ let submitted;
+ initSubs({searchResources:async()=>({items:[{...candidate,magnet:'',infoHash:'',releaseId:'opaque-release'}]}),addTask:async input=>{submitted=input;return {id:hash};}});
+ const current=item();await subs.runCheck(current);assert.equal(submitted.releaseId,'opaque-release');assert.equal(submitted.magnet,undefined);assert.equal(current.pendingTasks.S01E01,hash);assert.deepEqual(current.downloadedKeys,[]);
+});
+test('duplicate opaque source downloads retain the existing qB task identity',async()=>{
+ initSubs({searchResources:async()=>({items:[{...candidate,magnet:'',infoHash:'',releaseId:'opaque-release'}]}),addTask:async()=>{throw Object.assign(new Error('该任务已在下载列表中'),{statusCode:409,taskId:hash});}});
+ const current=item();await subs.runCheck(current);assert.equal(current.pendingTasks.S01E01,hash);assert.deepEqual(current.downloadedKeys,[]);
+});

@@ -36,6 +36,9 @@ const tasks = { items: [task, { ...task, id: 'b'.repeat(40), name: 'Example.Seri
 const status = { tmdbOk: true, tmdbKeySet: true, tmdbImageOk: true, tmdbMessage: 'TMDB 连接正常', tmdbImageMessage: '海报源连接正常', downloadDirOk: true, downloadDirMessage: '未挂载下载目录', engineReady: false, sources: [{ id: 'fixture', name: '示例索引源', ok: true, latencyMs: 128 }] };
 const imageCache = new Map();
 let logReads=0;
+let sourceSequence=1, sourceMutations=[];
+const sourceItems=[{id:'fixture-source',name:'家庭索引服务',type:'torznab',host:'nas.local:9117',enabled:true,apiKeySet:true,urlSet:true,lastTest:null}];
+
 const placeholder = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="780" height="460"><rect width="780" height="460" fill="#26394b"/><circle cx="600" cy="150" r="90" fill="#485f73"/></svg>');
 async function install(page) {
   page.on('pageerror', e => errors.push(e.message));
@@ -48,6 +51,16 @@ async function install(page) {
       const url = new URL(req.url());
       if (url.origin !== base) return req.continue();
       const json = body => req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if(url.pathname==='/api/indexers'&&req.method()==='GET')return json({items:sourceItems,limit:12});
+      if(url.pathname==='/api/indexers'&&req.method()==='POST'){
+        const body=JSON.parse(req.postData());sourceMutations.push({method:'POST',body});const item={id:'fixture-source-'+sourceSequence++,name:body.name,type:body.type,host:new URL(body.url).host,enabled:body.enabled,apiKeySet:!!body.apiKey,urlSet:true,lastTest:null};sourceItems.push(item);return json({item});
+      }
+      if(/^\/api\/indexers\/[^/]+(?:\/test)?$/.test(url.pathname)){
+        const id=url.pathname.split('/')[3],item=sourceItems.find(i=>i.id===id);
+        if(url.pathname.endsWith('/test')){item.lastTest={ok:!item.name.includes('失败'),message:item.name.includes('失败')?'无法连接索引服务':'Torznab 连接和认证通过',latencyMs:12,at:'2026-11-12T12:00:00Z'};return json(item.lastTest);}
+        if(req.method()==='DELETE'){sourceItems.splice(sourceItems.indexOf(item),1);return json({ok:true});}
+        const body=JSON.parse(req.postData());sourceMutations.push({method:'PATCH',body});Object.assign(item,{...body,apiKeySet:body.clearApiKey?false:(!!body.apiKey||item.apiKeySet)});delete item.url;delete item.apiKey;return json({item});
+      }
       if(url.pathname==='/api/notifications')return json({items:[{id:'notice-1',title:'订阅已提交',message:'Example 已提交 1 集',kind:'submitted',read:false,at:'2026-12-31T16:00:00Z'}],unread:1});
       if(url.pathname==='/api/notifications/read')return json({unread:0,items:[]});
       if(url.pathname==='/api/overview')return json({at:'2026-12-31T16:00:00Z',subscriptions:{total:5,enabled:4,checking:1},tasks:tasks.stats,capacity:{known:true,freeBytes:600*1024**3},engine:{ready:true},readiness:{tmdbKeySet:true,qbConfigured:true},queue:subs.slice(0,2),notifications:[]});
@@ -212,7 +225,7 @@ try {
   await page.screenshot({path:path.join(out,'search-specific-years-desktop.png')});
   await page.click('[data-key="years"][data-value="2020-2029"]');
   await page.waitForFunction(()=>location.hash.includes('years=2020-2029'));
-  await page.click('[data-action="filter-reset"]');await page.waitForFunction(()=>!location.hash.includes('years='));
+  await page.waitForSelector('[data-action="filter-reset"]',{visible:true});await pause(180);await page.click('[data-action="filter-reset"]');await page.waitForFunction(()=>!location.hash.includes('years='));
   record('search exposes individual years through Shanghai current year and sends exact-year ranges');
 
   await page.evaluate(()=>{location.hash='#/tasks';}); await page.waitForSelector('[data-action="task-pause"]');
@@ -249,10 +262,22 @@ try {
   await page.evaluate(()=>{const img=document.querySelector('.rail .card img');img.src='/missing-poster-for-acceptance.png';});
   await page.waitForSelector('.poster__empty');
   record('responsive backdrop and poster error fallback');
-  const routes = [['search', '#/search', '.grid .card'], ['detail', '#/detail/movie/' + cards[0].id, '.hero__title'], ['resources', '#/resources/movie/1?title=Example', '.res'], ['tasks', '#/tasks', '.task'], ['subscribe', '#/subscribe', '.sub-card'], ['calendar', '#/calendar', '.cal__grid'], ['health', '#/health', '.grid--cards .panel'], ['overview','#/overview','.overview-grid'], ['notifications','#/notifications','.notification-item']];
+  const routes = [['sources','#/sources','.source-card'], ['search', '#/search', '.grid .card'], ['detail', '#/detail/movie/' + cards[0].id, '.hero__title'], ['resources', '#/resources/movie/1?title=Example', '.res'], ['tasks', '#/tasks', '.task'], ['subscribe', '#/subscribe', '.sub-card'], ['calendar', '#/calendar', '.cal__grid'], ['health', '#/health', '.grid--cards .panel'], ['overview','#/overview','.overview-grid'], ['notifications','#/notifications','.notification-item']];
   for (const [name, hash, selector] of routes) {
     await page.evaluate(hash => { location.hash = hash; }, hash); await page.waitForSelector(selector); await checkLayout(page, name + ' desktop'); await page.screenshot({ path: path.join(out, name + '-desktop.png') });
   }
+  await page.evaluate(()=>{location.hash='#/sources';});await page.waitForSelector('.source-card');
+  await page.evaluate(()=>[...document.querySelectorAll('.source-card button')].find(b=>b.textContent==='编辑').click());await page.waitForSelector('#source-form');
+  assert.equal(await page.$eval('#source-form [name=url]',n=>n.value),'');assert.equal(await page.$eval('#source-form [name=apiKey]',n=>n.value),'');
+  const sourceSwitch=await page.$eval('#source-form [name=enabled]',n=>({width:parseFloat(getComputedStyle(n).width),height:parseFloat(getComputedStyle(n).height),checked:n.checked}));assert.deepEqual(sourceSwitch,{width:36,height:22,checked:true});
+  await page.focus('#source-form [name=enabled]');await page.keyboard.press('Space');assert.equal(await page.$eval('#source-form [name=enabled]',n=>n.checked),false);await page.keyboard.press('Space');
+  await page.screenshot({path:path.join(out,'source-editor-desktop.png')});
+  await page.click('#source-form [type=submit]');await page.waitForSelector('#source-form',{hidden:true});assert.equal(sourceMutations.at(-1).body.url,'');assert.equal(sourceMutations.at(-1).body.apiKey,'');record('source edit hides credentials, preserves blank fields and supports keyboard switches');
+  await page.evaluate(()=>[...document.querySelectorAll('.source-card button')].find(b=>b.textContent.includes('测试')).click());await page.waitForFunction(()=>document.querySelector('.source-card').textContent.includes('连接正常'));assert.ok((await page.$eval('.source-card',n=>n.textContent)).includes('2026-11-12 20:00'));record('source connection result uses Shanghai time');
+  await page.evaluate(()=>[...document.querySelectorAll('#view button')].find(b=>b.textContent.includes('添加渠道')).click());await page.waitForSelector('#source-form');await page.type('#source-form [name=name]','RSS 失败测试');await page.select('#source-form [name=type]','rss');await page.type('#source-form [name=url]','http://nas.local:9117/feed?passkey=fixture-secret');await page.click('#source-form [type=submit]');await page.waitForFunction(()=>document.querySelectorAll('.source-card').length===2);assert.equal(await page.$eval('#view',n=>n.textContent.includes('fixture-secret')),false);record('source creation masks complete RSS URLs');
+  await page.evaluate(()=>[...document.querySelectorAll('.source-card')].find(n=>n.textContent.includes('RSS 失败测试')).querySelector('button').click());await page.waitForFunction(()=>[...document.querySelectorAll('.source-card')].some(n=>n.textContent.includes('连接异常')));record('source connection failures remain visible');
+  await page.evaluate(()=>[...document.querySelectorAll('.source-card button')].find(b=>b.textContent==='停用').click());await page.waitForFunction(()=>document.querySelector('.source-card').textContent.includes('已停用'));assert.equal(tasks.items.length,2);record('disabling source preserves existing downloads');
+  await page.evaluate(()=>[...document.querySelectorAll('.source-card')].find(n=>n.textContent.includes('RSS 失败测试')).querySelectorAll('button')[3].click());await page.waitForFunction(()=>document.querySelectorAll('.source-card').length===1);record('source deletion updates page');
   await page.evaluate(()=>{location.hash='#/notifications';});await page.waitForSelector('.notification-item time');
   assert.ok((await page.$eval('.notification-item time',n=>n.textContent)).includes('2027-01-01 00:00'));
   assert.equal(await page.evaluate(()=>Intl.DateTimeFormat().resolvedOptions().timeZone),'America/Los_Angeles');
@@ -263,6 +288,9 @@ try {
   assert.ok((await page.$eval('.batch-results',n=>n.textContent)).includes('成功 1 / 1'));await page.click('.modal [data-close]');
   await page.click('.task-select');record('task state filters and selected batch pause');
   await page.evaluate(()=>{location.hash='#/subscribe';});await page.waitForSelector('.sub-card');
+  const checkbox=await page.$eval('.sub-card__select',n=>({width:n.querySelector('input').getBoundingClientRect().width,background:getComputedStyle(n).backgroundColor,touch:n.getBoundingClientRect().width}));assert.equal(checkbox.width,20);assert.equal(checkbox.background,'rgba(0, 0, 0, 0)');assert.equal(checkbox.touch,44);record('subscription selection uses small checkbox with transparent touch target');
+  await page.click('.sub-card__more');await page.waitForSelector('[data-action="sub-edit"]');await page.click('[data-action="sub-edit"]');await page.waitForSelector('#sub-edit-form');
+  assert.equal(await page.$eval('#sub-edit-form [name=enabled]',n=>n.getAttribute('role')),'switch');assert.equal(await page.$eval('#sub-edit-form [name=enabled]',n=>getComputedStyle(n).width),'36px');await pause(180);await page.screenshot({path:path.join(out,'subscription-editor-desktop.png')});await page.click('.modal [data-close]');record('subscription auto-check uses compact accessible switch');
   await page.click('.sub-card__select input');await page.click('[data-sub-batch="auto-off"]');await page.waitForSelector('.batch-results');await page.click('.modal [data-close]');record('subscription batch explicit selection');
   await page.click('.sub-tabs a[href$="type=tv"]');await page.waitForSelector('[data-action="sub-episodes"]');
   await page.click('[data-action="sub-episodes"]');await page.waitForSelector('.episode-row');
@@ -324,7 +352,7 @@ try {
   await mobile.screenshot({ path: path.join(out, 'calendar-light-mobile.png'), fullPage: true });
   await mobile.click('[data-action="theme-toggle"]');
   await mobile.click('[data-action="theme-toggle"]'); await mobile.evaluate(() => { location.hash = '#/home'; }); await mobile.waitForSelector('.feature'); await checkLayout(mobile, 'home mobile light');
-  assert.equal(await mobile.$eval('html', n => n.dataset.theme), 'light'); await mobile.screenshot({ path: path.join(out, 'home-light-mobile.png') });
+  assert.equal(await mobile.$eval('html', n => n.dataset.theme), 'light');assert.equal(await mobile.$eval('.btn',n=>getComputedStyle(n).borderRadius),'8px');record('light theme shares eight-pixel control radius'); await mobile.screenshot({ path: path.join(out, 'home-light-mobile.png') });
   if (process.env.WP_MOBILE_MATRIX) {
     const audit = [];
     const matrixRoutes = [['home', '#/home', '.feature'], ...routes, ...['tmdb','qb','filter','files','diag'].map(tab => ['settings-' + tab, '#/settings?tab=' + tab, '#settings-section'])];

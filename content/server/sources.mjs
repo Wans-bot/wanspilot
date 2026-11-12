@@ -1,3 +1,4 @@
+import { configuredSources } from './indexers.mjs';
 /**
  * 索引源：查询公开种子站，归一化结果，打分排序。
  *
@@ -371,13 +372,13 @@ function buildQueries(context) {
 
 export function activeSources() {
   const { proxy } = getSettings();
-  return REGISTRY.filter((s) => !s.needsProxy || proxy);
+  return [...REGISTRY.filter((s) => !s.needsProxy || proxy),...configuredSources().map(source=>({...source,run:async(q,context)=>{const items=await source.run(q,context);return items.map(raw=>({...baseItem({...raw,indexer:source.id,indexerName:source.name}),magnet:'',id:source.id+':'+(raw.infoHash || raw.releaseKey),releaseId:raw.releaseId,releaseKey:raw.releaseKey}));}}))];
 }
 
 const queryCache=new Map(),queryPending=new Map(),sourceCooldown=new Map();
 /** Reuse raw queries across seasons/episodes and back off after source throttling. */
 export async function querySource(source,q,context={}) {
- const key=JSON.stringify([source.id,q,context.type || 'movie',getSettings().proxy || '']);
+ const key=JSON.stringify([source.id,source.revision || '',q,context.type || 'movie',getSettings().proxy || '']);
  const cached=queryCache.get(key);if(cached&&Date.now()<cached.until)return cached.items.map(item=>({...item}));
  if(queryPending.has(key))return (await queryPending.get(key)).map(item=>({...item}));
  if(Date.now()<(sourceCooldown.get(source.id)||0))throw new Error('索引源请求过多（HTTP 429），冷却中，请稍后重试');
@@ -437,7 +438,7 @@ export async function searchResources(context) {
     episode: context.episode === undefined ? '' : context.episode,
     year: context.year || '',
     quality: context.qualityPreference || '',
-    sources: sources.map((source) => source.id),
+    sources: sources.map((source) => [source.id,source.revision || '']),
   });
   const hit = searchCache.get(cacheKey);
   if (hit && Date.now() - hit.at < SEARCH_CACHE_TTL_MS) {
@@ -472,9 +473,9 @@ export async function searchResources(context) {
   // 按 infoHash 去重，保留做种更多的那个
   const byHash = new Map();
   for (const item of collected) {
-    if (!item.infoHash) continue;
-    const prev = byHash.get(item.infoHash);
-    if (!prev || prev.seeders < item.seeders) byHash.set(item.infoHash, item);
+    const key=item.infoHash || item.releaseKey;if(!key)continue;
+    const prev=byHash.get(key);
+    if(!prev || item.releaseId&&!prev.releaseId || Boolean(item.releaseId)===Boolean(prev.releaseId)&&prev.seeders<item.seeders)byHash.set(key,item);
   }
 
   let items = [...byHash.values()];

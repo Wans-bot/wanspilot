@@ -438,3 +438,16 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 ### 1.4.1 行为补充
 
 `auto-on` 批量操作除开启自动下载外，还对已启用订阅立即排队检查（正在检查时复用同一次工作）；暂停订阅只更新开关并明确提示仍暂停。单个订阅 PATCH 从暂停转为启用，或从关闭自动下载转为开启时，同样立即安排检查。日志接口保留上海时间，以不带时区后缀的 `YYYY-MM-DD HH:mm:ss` 展示；内部时间和订阅导出仍保留明确时区。
+
+
+## 1.5.0 自定义资源渠道
+
+所有接口需登录；写入执行同源校验并记录业务操作，不记录请求体或凭据。
+
+- `GET /api/indexers` → `{items,limit:12}`。公开项仅包含 id/name/type/host/enabled/apiKeySet/urlSet/lastTest，不返回完整地址和密钥。
+- `POST /api/indexers` → 201 `{item}`。请求 `{name,type:"torznab"|"rss",url,apiKey?,enabled?}`，name 最多 60 字符，HTTP(S) URL 最多 8192 字符，禁止 URL 用户名密码，API Key 最多 512 字符。
+- `PATCH /api/indexers/:id` → `{item}`。未提供字段保留原值；url/apiKey 空字符串保留；`clearApiKey:true` 显式清除密钥；修改会使旧资源标识失效。
+- `DELETE /api/indexers/:id` → `{ok:true}`；不存在 404，不删除下载。
+- `POST /api/indexers/:id/test` → `{ok,message,latencyMs,at}`，保存最近测试结果；连接失败以 ok:false 返回。Torznab 测试 t=caps，RSS 验证 RSS channel。
+
+`GET /api/resources` 自定义结果包含 releaseId/releaseKey；magnet 为空，infoHash 可能未知。`POST /api/tasks` 可传 `{releaseId,sizeBytes?}`，服务端解析原磁力或下载原始 torrent，忽略同时传入的客户端 magnet/infoHash/torrentBase64，校验可用的 40 位 infoHash。资源标识超时或重启后 410，渠道停用或修改后 409。XML 限 2 MiB，torrent 限 8 MiB，不解析 DTD/自定义实体。
