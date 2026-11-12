@@ -35,6 +35,7 @@ const task = { id: 'a'.repeat(40), infoHash: 'a'.repeat(40), name: 'Example.Movi
 const tasks = { items: [task, { ...task, id: 'b'.repeat(40), name: 'Example.Series.S01E01.2160p', state: 'seeding', progress: 1, rateDown: 0 }], stats: { active: 2, completed: 1, rateDown: task.rateDown, rateUp: task.rateUp, totalSizeBytes: task.sizeBytes * 2 } };
 const status = { tmdbOk: true, tmdbKeySet: true, tmdbImageOk: true, tmdbMessage: 'TMDB 连接正常', tmdbImageMessage: '海报源连接正常', downloadDirOk: true, downloadDirMessage: '未挂载下载目录', engineReady: false, sources: [{ id: 'fixture', name: '示例索引源', ok: true, latencyMs: 128 }] };
 const imageCache = new Map();
+let logReads=0;
 const placeholder = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="780" height="460"><rect width="780" height="460" fill="#26394b"/><circle cx="600" cy="150" r="90" fill="#485f73"/></svg>');
 async function install(page) {
   page.on('pageerror', e => errors.push(e.message));
@@ -47,6 +48,13 @@ async function install(page) {
       if (url.origin !== base) return req.continue();
       const json = body => req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
       if (url.pathname === '/api/settings' && req.method() === 'PUT' && JSON.parse(req.postData()).qbUsername === 'SAVE-FAILURE') return req.respond({ status: 507, contentType: 'application/json', body: '{"error":"测试：磁盘不可写"}' });
+      if (url.pathname === '/api/logs') {logReads++;return req.respond({status:200,contentType:'text/plain',body:'2026-11-12 [INFO] [subs] 创建订阅 Example\n2026-11-12 [INFO] 正在搜索 S01E01\n刷新次数 '+logReads});}
+      if (/^\/api\/subscriptions\/[^/]+\/check$/.test(url.pathname)) {
+        const sub=subs.find(item=>item.id===url.pathname.split('/')[3]);
+        sub.isChecking=true;sub.activity={stage:'searching',at:new Date().toISOString(),message:'正在搜索 S01E02'};sub.lastMessage='正在搜索 S01E02';sub.history=[{...sub.activity}];
+        setTimeout(()=>{sub.isChecking=false;sub.pendingKeys=['S01E02'];sub.lastCheckAt=new Date().toISOString();sub.lastMessage='已提交 1 集到 qBittorrent';sub.history.push({stage:'submitted',message:sub.lastMessage,at:new Date().toISOString()});sub.downloads={downloading:1,tasks:[{id:'a'.repeat(40),name:'Example.S01E02',state:'downloading',progress:.4}]};},1800);
+        return json({started:true,item:sub,message:'已开始检查'});
+      }
       if (url.pathname === '/api/settings/test') {
         const body=JSON.parse(req.postData());
         if(body.kind==='qb') return json({ok:body.qbUsername!=='FAIL-PROBE',message:body.qbUsername==='FAIL-PROBE'?'模拟连接失败':'qB 4.6 连接正常'});
@@ -78,7 +86,8 @@ async function install(page) {
         ];
         // A delayed old-month response exercises rapid navigation race handling.
         if (month.endsWith('-10')) await pause(900);
-        return json({ month, today: month + '-12', total: 14, missing: 6, days });
+        const missingDays=[{date:'2025-10-01',items:Array.from({length:11},(_,i)=>({...item(0,'01',i+10,'missing'),airDate:'2025-10-01'}))},...days.map(day=>({...day,items:day.items.filter(item=>item.status==='missing')})).filter(day=>day.items.length)];
+        return json({ month, today: month + '-12', total: 14, missing: 17, missingTotal:17,monthMissing:6,missingComplete:true,missingDays, days });
       }
       if (url.pathname === '/api/health/report') return json({ tmdb: { ok: true, message: '连接正常' }, sources: status.sources, capacity: { freeBytes: 600 * 1024 ** 3, quotaGB: 0, downloadDir: '/downloads' }, tasks: tasks.stats, at: new Date().toISOString() });
       if (url.pathname === '/api/image') {
@@ -115,6 +124,9 @@ try {
   await page.$eval('#access-token', node => { node.value = ''; });
   await page.$eval('#access-username', node => { node.value = ''; });
   await page.evaluate(() => { document.querySelector('.access__error').textContent = ''; });
+  await page.waitForFunction(()=>document.querySelector('.access__scene')?.naturalWidth>0);
+  assert.ok(await page.$$eval('.access__fields .field__label svg',nodes=>nodes.length>=2));
+  record('login includes local SVG illustration and field icons');
   await checkLayout(page, 'login desktop'); await page.screenshot({ path: path.join(out, 'login-desktop.png') });
   await page.type('#access-username', 'admin'); await page.type('#access-token', token); await page.click('#access-form [type=submit]'); await page.waitForSelector('.feature');
   await page.waitForFunction(() => document.querySelector('.feature__image')?.naturalWidth > 0, { timeout: 22000 });
@@ -176,6 +188,21 @@ try {
   assert.equal(await page.$eval('[data-id="unknown-air-date"] .sub-card__schedule',n=>n.textContent),'本月暂无后续播出计划');
   await page.screenshot({path:path.join(out,'subscriptions-tv-desktop.png')});
   record('TV subscriptions use unique downloaded counts and known calendar dates');
+  await page.click('[data-id="calendar-sub-2"] [data-action="sub-check"]');
+  await page.waitForFunction(()=>document.querySelector('[data-id="calendar-sub-2"] .sub-card__status')?.textContent.includes('正在搜索'));
+  await page.click('[data-id="calendar-sub-2"] [data-action="sub-activity"]');await page.waitForSelector('[data-subscription-activity]');
+  assert.ok((await page.$eval('[data-subscription-activity]',n=>n.textContent)).includes('正在搜索 S01E02'));
+  await page.waitForFunction(()=>document.querySelector('[data-subscription-activity]')?.textContent.includes('关联下载任务'),{timeout:12000});
+  assert.ok((await page.$eval('[data-id="calendar-sub-2"] .sub-card__status',n=>n.textContent)).includes('下载中'));
+  await page.screenshot({path:path.join(out,'subscription-activity-desktop.png')});await page.click('.modal [data-close]');
+  record('subscription search and download stages refresh without reload and history remains visible');
+  await page.evaluate(()=>{location.hash='#/settings?tab=diag';});await page.waitForSelector('#logs');
+  await page.waitForFunction(()=>document.querySelector('#logs')?.textContent.includes('创建订阅'));
+  const initialReads=logReads;await page.waitForFunction(()=>document.querySelector('#logs')?.textContent.includes('刷新次数 2'),{timeout:10000});
+  await page.type('#logs-filter','创建订阅');
+  assert.ok(!(await page.$eval('#logs',n=>n.textContent)).includes('正在搜索'));
+  await page.screenshot({path:path.join(out,'operation-logs-desktop.png')});record('operation logs auto load refresh and filter');
+
   await page.evaluate(()=>{location.hash='#/home';}); await page.waitForSelector('.feature__image');
   const responsive=await page.$eval('.feature__image',n=>({srcset:n.srcset,sizes:n.sizes}));
   assert.ok(responsive.srcset.includes('w1280')); assert.ok(responsive.sizes);
@@ -187,6 +214,12 @@ try {
     await page.evaluate(hash => { location.hash = hash; }, hash); await page.waitForSelector(selector); await checkLayout(page, name + ' desktop'); await page.screenshot({ path: path.join(out, name + '-desktop.png') });
   }
   await page.evaluate(() => { location.hash = '#/calendar'; }); await page.waitForSelector('.cal__grid');
+  assert.equal(await page.$eval('.cal-metric:nth-child(3) strong',n=>n.textContent),'17');
+  await page.click('.cal-metric:nth-child(3)');await page.waitForSelector('.cal-agenda__day[data-date="2025-10-01"]');
+  assert.ok((await page.$eval('#calendar-count',n=>n.textContent)).includes('17 集'));
+  assert.equal(await page.$eval('.cal-month-view',n=>getComputedStyle(n).display),'none');
+  await page.screenshot({path:path.join(out,'calendar-all-missing.png')});record('calendar missing metric includes prior months and opens full backlog');
+  await page.select('#calendar-status','all');
   const daySelector = '.cal__cell[data-date$="-12"]';
   assert.equal(await page.$$eval(daySelector + ' .cal__item', nodes => nodes.length), 3); record('calendar collapses busy dates');
   await page.click(daySelector + ' .cal__more');
@@ -309,19 +342,28 @@ try {
   assert.ok(await mobile.$eval('.task [role="progressbar"]',n=>n.getBoundingClientRect().width>=100));
   await mobile.screenshot({path:path.join(out,'tasks-mobile-final.png')});
   record('mobile task progress remains visible');
+  await mobile.evaluate(()=>{location.hash='#/subscribe?type=tv';});await mobile.waitForSelector('.sub-card [data-action="sub-activity"]');
+  await mobile.click('.sub-card [data-action="sub-activity"]');await mobile.waitForSelector('.subscription-activity-detail');
+  await checkLayout(mobile,'subscription activity mobile');await mobile.screenshot({path:path.join(out,'subscription-activity-mobile.png')});await mobile.click('.modal [data-close]');
   await page.bringToFront();
   console.log('CHECK organizer preview');
   await page.evaluate(() => { location.hash = '#/settings?tab=files'; }); await page.waitForSelector('[data-action="organize-preview"]');
   await page.click('[data-action="organize-preview"]'); await page.waitForSelector('.modal'); record('organizer preview dialog'); await page.click('.modal [data-close]');
   await page.click('#logout-button'); await page.waitForSelector('#access-form'); record('logout returns to access screen');
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true }); await checkLayout(page, 'login mobile');
-  const loginGeometry=await page.$eval('#access-form',n=>{const r=n.getBoundingClientRect(),b=n.querySelector('[type=submit]').getBoundingClientRect(),fields=n.querySelector('.access__fields').getBoundingClientRect();return {center:(r.left+r.right)/2,width:r.width,buttonWidth:b.width,gap:b.top-fields.bottom};});
+  const loginGeometry=await page.$eval('#access-form',n=>{const r=n.getBoundingClientRect(),b=n.querySelector('[type=submit]').getBoundingClientRect(),fields=n.querySelector('.access__fields').getBoundingClientRect();return {center:(r.left+r.right)/2,width:fields.width,buttonWidth:b.width,gap:b.top-fields.bottom};});
   assert.ok(Math.abs(loginGeometry.center-195)<2);assert.ok(loginGeometry.buttonWidth>=loginGeometry.width-2);assert.ok(loginGeometry.gap>=20);
   record('login centers form and provides full width separated submit',loginGeometry);
   await page.screenshot({ path: path.join(out, 'login-mobile.png') });
   await page.setViewport({ width: 320, height: 740 }); await checkLayout(page, 'login narrow mobile');
   await page.evaluate(() => document.documentElement.dataset.theme = 'light'); await checkLayout(page, 'login light mobile');
   await page.screenshot({ path: path.join(out, 'login-light-mobile.png') });
+  for(const [width,height] of [[768,1024],[844,390],[1024,768],[390,430]]) {
+    await page.setViewport({width,height});await checkLayout(page,'login '+width+'x'+height);
+    await page.$eval('#access-form [type=submit]',n=>n.scrollIntoView({block:'center',behavior:'instant'}));
+    const visible=await page.$eval('#access-form [type=submit]',n=>{const r=n.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;});assert.equal(visible,true);
+    if(width===844)await page.screenshot({path:path.join(out,'login-landscape.png')});
+  }
   assert.deepEqual(errors, []); record('no browser JavaScript exceptions');
   fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ passed: results.length, fixtures: true, realArtSource: Boolean(process.env.WP_IMAGE_SOURCE), checks: results, errors }, null, 2));
   console.log('Browser acceptance complete:', results.length, 'checks');

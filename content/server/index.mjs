@@ -1,3 +1,4 @@
+import { auditOperation } from './audit.mjs';
 /**
  * wanspilot 后端入口：HTTP 服务、路由分发、静态资源托管、SSE 推送。
  *
@@ -49,7 +50,7 @@ import {
   createSubscription,
   updateSubscription,
   deleteSubscription,
-  checkNow,
+  queueCheck,
   exportPayload,
   importPayload,
   startScheduler,
@@ -320,6 +321,7 @@ async function handleApi(req, res, url) {
     if (method === 'PUT' || method === 'POST') {
       const body = await readBody(req);
       const saved = updateSettings(body);
+      log.info('[settings] 已保存配置字段：'+Object.keys(body).filter(key=>Object.hasOwn(saved,key)).join('、'));
       try {
         reconfigure();
       } catch (err) {
@@ -359,6 +361,7 @@ async function handleApi(req, res, url) {
       try {
         const client = clientFromSettings(probe);
         if (!client) {
+          req.operationResult='qB 连接测试失败：尚未配置地址';
           sendJson(res, 200, {
             ok: false,
             message: '还没有填写 qBittorrent 地址：请填 http://<NAS 局域网 IP>:<qB 端口>，不要用 127.0.0.1 / localhost',
@@ -369,6 +372,7 @@ async function handleApi(req, res, url) {
         }
         const info = await client.probe();
         const version = info.version || '';
+        req.operationResult='qB 连接测试通过 '+version;
         sendJson(res, 200, {
           ok: true,
           message: (version ? `已连上 qBittorrent ${version}` : '已连上 qBittorrent') + (info.warnings?.length ? '；' + info.warnings.join('；') : ''),
@@ -377,12 +381,14 @@ async function handleApi(req, res, url) {
           apiVersion: info.apiVersion || '',
         });
       } catch (err) {
+        req.operationResult='qB 连接测试失败：'+err.message;
         sendJson(res, 200, { ok: false, message: err.message, version: '', apiVersion: '' });
       }
       return true;
     }
     if (body.kind === 'source') {
       const all = await sourcesStatus(body.id);
+      req.operationResult='索引源测试：'+all.filter(source=>source.ok).length+'/'+all.length+' 通过';
       sendJson(res, 200, { sources: all, downloadDirOk: downloadDirStatus().ok, engineReady: engineReady() });
       return true;
     }
@@ -392,6 +398,7 @@ async function handleApi(req, res, url) {
       if (typeof body[key] === 'string') probe[key] = body[key].trim();
     }
     const tmdbStatus = await tmdb.tmdbStatus(probe);
+    req.operationResult='TMDB '+(tmdbStatus.tmdbOk?'通过':'失败')+'，图片源 '+(tmdbStatus.tmdbImageOk?'通过':'失败');
     sendJson(res, 200, { ...tmdbStatus, testedDraft: true });
     return true;
   }
@@ -600,8 +607,8 @@ async function handleApi(req, res, url) {
     const id = decodeURIComponent(seg[2]);
     const action = seg[3];
     if (action === 'check' && method === 'POST') {
-      const result = await checkNow(id);
-      sendJson(res, result ? 200 : 404, result || { error: '订阅不存在' });
+      const result = queueCheck(id);
+      sendJson(res, result ? 202 : 404, result || { error: '订阅不存在' });
       return true;
     }
     if (!action && method === 'PATCH') {
@@ -635,6 +642,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname.startsWith('/api/')) auditOperation(req,res,url);
   const run = async () => {
     if (url.pathname.startsWith('/api/')) {
       await handleApi(req, res, url);

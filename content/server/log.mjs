@@ -12,7 +12,18 @@ const lines = [];
 let logFile = '';
 let fileHandle = null;
 
+export function redact(value) {
+  return String(value)
+    .replace(/([?&](?:api_key|token|access_token|password|apikey)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@')
+    .replace(/(Bearer\s+)[^\s]+/gi,'$1[redacted]')
+    .replace(/(["']?(?:password|qbPassword|tmdbApiKey|token|WP_PASSWORD)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1[redacted]')
+    .replace(/[\r\n]+/g,' ');
+}
+
 export function initLog(dataDir) {
+  if (fileHandle !== null) { try { fs.closeSync(fileHandle); } catch {} fileHandle=null; }
+  lines.length=0;
   try {
     const dir = path.join(dataDir, 'logs');
     fs.mkdirSync(dir, { recursive: true });
@@ -24,6 +35,16 @@ export function initLog(dataDir) {
     } catch {
       // 文件不存在是正常情况
     }
+    // Recover bounded history after restart; never read an unbounded log into RAM.
+    for (const file of [logFile+'.1',logFile]) {
+      try {
+        const fd=fs.openSync(file,'r');
+        try { const size=fs.fstatSync(fd).size, start=Math.max(0,size-MAX_FILE_BYTES);const buf=Buffer.alloc(size-start);fs.readSync(fd,buf,0,buf.length,start);
+          const previous=buf.toString('utf8').split('\n');if(start)previous.shift();lines.push(...previous.filter(Boolean).slice(-MAX_MEMORY_LINES).map(redact));
+          if(lines.length>MAX_MEMORY_LINES)lines.splice(0,lines.length-MAX_MEMORY_LINES);
+        } finally { fs.closeSync(fd); }
+      } catch { /* No previous log. */ }
+    }
   } catch (err) {
     logFile = '';
     process.stderr.write(`[log] 无法初始化日志目录: ${err.message}\n`);
@@ -32,17 +53,7 @@ export function initLog(dataDir) {
 
 function write(level, args) {
   const time = new Date().toISOString();
-  const text = args
-    .map((a) => {
-      if (typeof a === 'string') return a;
-      if (a instanceof Error) return `${a.message}${a.stack ? `\n${a.stack}` : ''}`;
-      try {
-        return JSON.stringify(a);
-      } catch {
-        return String(a);
-      }
-    })
-    .join(' ').replace(/([?&]api_key=)[^&\s]+/gi, '$1[redacted]').replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@');
+  const text = redact(args.map(a => { if(typeof a==='string') return a;if(a instanceof Error)return a.message;try{return JSON.stringify(a);}catch{return String(a);} }).join(' '));
   const line = `${time} [${level}] ${text}`;
 
   lines.push(line);

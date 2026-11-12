@@ -6,7 +6,8 @@
  */
 import path from 'node:path';
 import { JsonStore } from './store.mjs';
-import { log } from './log.mjs';
+import { log, redact } from './log.mjs';
+import { localDateKey } from '../web/calendar-model.js';
 import { getSettings, resolveDownloadDir } from './settings.mjs';
 import * as tmdb from './tmdb.mjs';
 import { searchResources } from './sources.mjs';
@@ -17,6 +18,7 @@ let store = null;
 let timer = null;
 let running = false;
 const checks = new Map();
+const searchRuns = new Map();
 
 let engineAdd = null;
 let resourceSearch = searchResources;
@@ -31,6 +33,13 @@ export function initSubscriptions(dataDir, deps = {}) {
   mediaDetail = deps.detail || tmdb.detail;
   mediaSeason = deps.season || tmdb.season;
   subscribeKeysFactory = deps.getTask || getTask;
+  for (const item of store.data.items || []) {
+    if (item.checkInProgress || ['checking','searching','submitting'].includes(item.activity?.stage)) {
+      item.checkInProgress=false;
+      item.nextCheckAt = new Date().toISOString();
+      activity(item,'interrupted','服务重启，上次检查已中断，等待重新检查');
+    }
+  }
   return listSubscriptions();
 }
 
@@ -41,6 +50,24 @@ function save() {
 export function listSubscriptions() {
   const items = Array.isArray(store.data.items) ? store.data.items : [];
   return { items: items.map(decorate) };
+}
+
+/** Bounded per-subscription history is persisted with the subscription, never with credentials. */
+function activity(item, stage, message) {
+  const event = { stage, message:redact(String(message)).slice(0,1000), at:new Date().toISOString() };
+  item.activity = event;
+  item.history = [...(item.history || []),event].slice(-100);
+  item.lastMessage = event.message;
+  log[stage === 'error' ? 'warn' : 'info'](`[subs] 《${item.title || item.tmdbId}》(${item.id}) ${event.message}`);
+  save();
+}
+function downloadSnapshot(item) {
+  const tasks = [...new Set(Object.values(item.pendingTasks || {}))].map(id => subscribeKeysFactory?.(id)).filter(Boolean);
+  return { tasks:tasks.map(task=>({id:task.id,name:task.name || '',state:task.state,progress:Number(task.progress)||0})),
+    downloading:tasks.filter(task=>['downloading','seeding'].includes(task.state) && Number(task.progress)<1).length,
+    paused:tasks.filter(task=>task.state==='paused').length,
+    queued:tasks.filter(task=>['queued','fetching-metadata'].includes(task.state)).length,
+    errors:tasks.filter(task=>task.state==='error').length };
 }
 
 function decorate(item) {
@@ -69,6 +96,10 @@ function decorate(item) {
     upgrade: item.upgrade || null,
     state: item.state || 'idle',
     totalEpisodes: item.totalEpisodes || 0,
+    isChecking:checks.has(item.id),
+    activity:item.activity || null,
+    history:(item.history || []).slice(-100),
+    downloads:downloadSnapshot(item),
   };
 }
 
@@ -129,6 +160,8 @@ export function createSubscription(input) {
   store.data.items = items;
   save();
 
+  activity(item,'queued','订阅已创建，已安排首次检查');
+
   // 订阅后立刻跑一次，用户不用等下一个周期
   runCheck(item).catch((err) => log.warn(`[subs] 首次检查失败 ${item.id}: ${err.message}`));
   return { item: decorate(item) };
@@ -162,6 +195,7 @@ export function updateSubscription(id, patch) {
   if ('enabled' in patch) {
     item.enabled = Boolean(patch.enabled);
     item.state = item.enabled ? 'watching' : 'paused';
+    if(item.enabled)item.nextCheckAt=new Date().toISOString();
   }
   if ('seasons' in patch) item.seasons = item.type === 'movie' ? null : normalizeSeasons(patch.seasons);
   // API.md 写的是「SubscriptionItem 的任意子集」，下载记录也要能重置：
@@ -175,7 +209,7 @@ export function updateSubscription(id, patch) {
     item.downloadedKeys = [...keys];
     if (!item.downloadedKeys.length && item.state === 'idle') item.state = 'watching';
   }
-  save();
+  activity(item, item.enabled === false ? 'paused' : 'updated', '订阅设置已更新' + ('enabled' in patch ? (item.enabled ? '，已启用' : '，已暂停') : ''));
   return { item: decorate(item) };
 }
 
@@ -183,6 +217,8 @@ export function deleteSubscription(id) {
   const items = Array.isArray(store.data.items) ? store.data.items : [];
   const idx = items.findIndex((it) => it.id === id);
   if (idx < 0) return false;
+  const item=items[idx]; item.cancelled=true;
+  activity(item,'deleted','已取消订阅，现有下载任务保留');
   items.splice(idx, 1);
   store.data.items = items;
   save();
@@ -192,7 +228,7 @@ export function deleteSubscription(id) {
 /* --------------------------------------------------------------- 检查逻辑 */
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateKey();
 }
 
 function isAired(dateStr) {
@@ -313,7 +349,22 @@ async function searchForTitle(item, params, localizedTitle, want, extraFilter, o
   const primary = item.originalTitle || localizedTitle || item.title;
   let checked = 0;
   const attempt = async (q) => {
-    const res = await resourceSearch({ ...params, q });
+    const run=searchRuns.get(item.id);
+    const key=JSON.stringify({...params,q});
+    let res=run?.cache.get(key);
+    if (!res) {
+      if (run && (run.remaining<=0 || Date.now()>run.deadline)) {
+        const err=new Error('本轮搜索已达到时间或查询上限，剩余缺集将在下次检查继续');err.code='SEARCH_BUDGET';throw err;
+      }
+      if (run) run.remaining--;
+      const scope=params.episode ? epKey(params.season,params.episode) : params.season ? '第 '+params.season+' 季整季包' : '电影';
+      activity(item,'searching','正在搜索 '+scope+'：'+q);
+      res=await resourceSearch({ ...params, q });
+      const failed=(res.sources || []).filter(source=>source.ok===false);
+      if (res.sources?.length && failed.length===res.sources.length) throw new Error('全部索引源不可用：'+failed.map(source=>source.name || source.id).join('、'));
+      activity(item,'searching','搜索 '+scope+' 返回 '+res.items.length+' 条候选'+(failed.length?'，'+failed.length+' 个源不可用':''));
+      if (run) run.cache.set(key,res);
+    }
     checked += res.items.length;
     const pool = extraFilter ? res.items.filter(extraFilter) : res.items;
     return pickBest(pool, item, want, titles, options);
@@ -342,6 +393,8 @@ async function searchWithLadder(item, params, localizedTitle, want, extraFilter)
 
 /** 交给下载引擎。候选已在下载列表里是正常情况，不能记成检查失败。 */
 async function addToEngine(item, candidate) {
+  if (item.cancelled || item.enabled === false) throw new Error('订阅已暂停或取消，停止提交新下载');
+  activity(item,'submitting','已匹配资源，正在提交到 qBittorrent：'+candidate.title);
   // 体积已知时先看空间，避免下到一半撑爆网盘
   const cap = capacityCheck(candidate.sizeBytes, Number(((listTasks().stats) || {}).totalSizeBytes) || 0, Number(((listTasks().stats) || {}).remainingBytes) || 0);
   if (!cap.ok) {
@@ -350,6 +403,7 @@ async function addToEngine(item, candidate) {
   }
   try {
     const task = await engineAdd({ magnet: candidate.magnet, sizeBytes: candidate.sizeBytes }, getSettings().qbSavePath || '');
+    activity(item,'submitted','qBittorrent 已接受下载任务：'+candidate.title);
     return { ok: true, duplicate: false, taskId: task?.id || candidate.infoHash || candidate.magnet.match(/btih:([a-f0-9]{40})/i)?.[1] };
   } catch (err) {
     if (/已在下载列表/.test(err.message)) {
@@ -440,123 +494,66 @@ async function checkMovie(item) {
 }
 
 async function checkTv(item) {
-  const detail = await mediaDetail({ type: 'tv', id: item.tmdbId });
-  item.title = detail.title || item.title;
-  item.originalTitle = detail.originalTitle || item.originalTitle || '';
-  item.posterPath = detail.posterPath || item.posterPath;
-  item.year = detail.year || item.year;
-
-  // 没选季 = 追全部季。但像「仙逆」这种 160 多集的剧，从第 1 季逐集查过去要几分钟，
-  // 而且早年的季早已过期；所以只查「最后两季」，与日历页的口径一致。
-  const allSeasons = (detail.seasons || []).map((s) => s.seasonNumber);
-  const seasonNumbers = item.seasons?.length
-    ? item.seasons
-    : allSeasons.slice(-2);
-  if (!item.seasons?.length && allSeasons.length > seasonNumbers.length) {
-    log.info(`[subs] ${item.id} 未指定季，本次只检查最后 ${seasonNumbers.length} 季（共 ${allSeasons.length} 季）`);
-  }
-  if (!seasonNumbers.length) {
-    item.lastMessage = 'TMDB 未返回季信息';
-    item.state = 'error';
-    return { found: 0, added: [] };
-  }
-
-  const downloaded = new Set([...item.downloadedKeys, ...Object.keys(item.pendingTasks || {})]);
-  let totalAired = 0;
-  let candidatesChecked = 0;
-  const added = [];
-  let lastMessage = '';
-
-  // 一次检查最多补 5 集，避免首次订阅把整个季一次性灌进下载队列
-  let budget = 5;
-
-  for (const seasonNumber of seasonNumbers) {
-    if (budget <= 0) break;
-    let seasonInfo;
+  const detail = await mediaDetail({ type:'tv', id:item.tmdbId });
+  item.title=detail.title || item.title; item.originalTitle=detail.originalTitle || item.originalTitle || '';
+  item.posterPath=detail.posterPath || item.posterPath; item.year=detail.year || item.year;
+  const seasons=[...new Set((item.seasons?.length ? item.seasons : (detail.seasons || []).map(s=>s.seasonNumber)).map(Number))].filter(n=>Number.isInteger(n)&&n>0).sort((a,b)=>a-b);
+  if (!seasons.length) throw new Error('TMDB 未返回季信息');
+  const known=new Set([...item.downloadedKeys,...Object.keys(item.pendingTasks || {})]);
+  const aired=[], unavailable=[];
+  for (const seasonNumber of seasons) {
+    activity(item,'checking','正在读取第 '+seasonNumber+' 季播出信息');
     try {
-      seasonInfo = await mediaSeason({ id: item.tmdbId, season: seasonNumber });
-    } catch (err) {
-      log.warn(`[subs] ${item.id} 第 ${seasonNumber} 季信息获取失败: ${err.message}`);
-      continue;
-    }
-    const aired = (seasonInfo.episodes || []).filter((e) => isAired(e.airDate));
-    totalAired += aired.length;
-    const missing = aired.filter((e) => !downloaded.has(epKey(seasonNumber, e.episodeNumber)));
-    if (!missing.length) continue;
-
-    // 缺得多时先试整季包，一次拿到全部
-    if (missing.length >= 4) {
-      // 整季包必须声明同一季，或声明为合集；片名要过闸。
-      const { best: pack, checked } = await searchWithLadder(
-        item,
-        { type: 'tv', season: seasonNumber, year: item.year, qualityPreference: item.qualityPreference },
-        detail.title,
-        'pack',
-        (c) => c.isSeasonPack && (c.season === null || c.season === seasonNumber),
-      );
-      candidatesChecked += checked;
-      if (pack && item.autoDownload) {
-        const packed = await addToEngine(item, pack);
-        if (!packed.ok) { lastMessage = packed.reason; continue; }
-        trackSubmission(item, missing.map(e => epKey(seasonNumber, e.episodeNumber)), packed.taskId);
-        for (const e of missing) {
-          downloaded.add(epKey(seasonNumber, e.episodeNumber));
-          added.push(epKey(seasonNumber, e.episodeNumber));
-        }
-        lastMessage = packed.duplicate
-          ? `整季包已在下载列表中：${pack.title}`
-          : `已加入整季包：${pack.title}`;
-        budget = 0;
-        continue;
+      const info=await mediaSeason({id:item.tmdbId,season:seasonNumber});
+      const seen=new Set();
+      for (const episode of info.episodes || []) {
+        if (!Number.isInteger(episode.episodeNumber) || episode.episodeNumber<1 || !isAired(episode.airDate)) continue;
+        const key=epKey(seasonNumber,episode.episodeNumber);if(seen.has(key))continue;seen.add(key);
+        aired.push({season:seasonNumber,episode:episode.episodeNumber,key});
+      }
+    } catch(err) { unavailable.push(seasonNumber); activity(item,'warning','第 '+seasonNumber+' 季信息获取失败：'+err.message); }
+  }
+  item.totalEpisodes=aired.length;
+  const missing=aired.filter(episode=>!known.has(episode.key));
+  activity(item,'checking','已播 '+aired.length+' 集，待补 '+missing.length+' 集，已提交 '+Object.keys(item.pendingTasks || {}).length+' 集');
+  if (!missing.length) {
+    item.lastMessage=unavailable.length ? '部分季信息获取失败，请稍后重试' : Object.keys(item.pendingTasks || {}).length ? '已播集数均已下载或提交，等待 qBittorrent 完成' : aired.length ? '已是最新，共 '+aired.length+' 集' : '暂无已播出的剧集';
+    item.state=unavailable.length?'error':'watching';return {found:0,added:[]};
+  }
+  const sorted=missing.slice().sort((a,b)=>a.season-b.season || a.episode-b.episode);
+  const after=sorted.findIndex(ep=>ep.key===item.searchAfterKey);
+  const ordered=after>=0 ? [...sorted.slice(after+1),...sorted.slice(0,after+1)] : sorted;
+  let checked=0, attempts=0, blocked='';const added=[],packed=new Set();
+  for (const ep of ordered) {
+    if (attempts>=5 || item.cancelled || item.enabled===false) break;
+    if (known.has(ep.key)) continue;
+    const sameSeason=sorted.filter(e=>e.season===ep.season && !known.has(e.key));
+    if (sameSeason.length>=4 && !packed.has(ep.season)) {
+      packed.add(ep.season);
+      const found=await searchWithLadder(item,{type:'tv',season:ep.season,year:item.year,qualityPreference:item.qualityPreference},detail.title,'pack',c=>c.isSeasonPack && (c.season===null || c.season===ep.season));
+      checked+=found.checked;
+      if(found.best && item.autoDownload) {
+        const result=await addToEngine(item,found.best);
+        if(!result.ok) { blocked=result.reason; break; }
+        trackSubmission(item,sameSeason.map(e=>e.key),result.taskId);
+        sameSeason.forEach(e=>{known.add(e.key);added.push(e.key);});
+        // One pack per check keeps a first subscription from flooding the queue.
+        break;
       }
     }
-
-    for (const episode of missing) {
-      if (budget <= 0) break;
-      // 单集候选必须自己声明同一季，且集号包含目标集；声明了别的季集一律不要。
-      const { best, checked } = await searchWithLadder(
-        item,
-        {
-          type: 'tv',
-          season: seasonNumber,
-          episode: episode.episodeNumber,
-          year: item.year,
-          qualityPreference: item.qualityPreference,
-        },
-        detail.title,
-        'episode',
-        (c) => !c.isSeasonPack
-          && c.season === seasonNumber
-          && (c.episodeList || []).includes(episode.episodeNumber),
-      );
-      candidatesChecked += checked;
-      if (!best) continue;
-      if (!item.autoDownload) {
-        lastMessage = `找到 ${checked} 条候选，自动下载已关闭`;
-        continue;
-      }
-      const single = await addToEngine(item, best);
-      if (!single.ok) { lastMessage = single.reason; continue; }
-      trackSubmission(item, [epKey(seasonNumber, episode.episodeNumber)], single.taskId);
-      downloaded.add(epKey(seasonNumber, episode.episodeNumber));
-      added.push(epKey(seasonNumber, episode.episodeNumber));
-      lastMessage = single.duplicate
-        ? `已在下载列表中：${best.title}`
-        : `已加入下载：${best.title}`;
-      budget -= 1;
-    }
+    attempts++; item.searchAfterKey=ep.key;
+    const found=await searchWithLadder(item,{type:'tv',season:ep.season,episode:ep.episode,year:item.year,qualityPreference:item.qualityPreference},detail.title,'episode',c=>!c.isSeasonPack && c.season===ep.season && (c.episodeList || []).includes(ep.episode));
+    checked+=found.checked;
+    if(!found.best) { activity(item,'searching',ep.key+' 未找到符合片名、集号、画质、做种数及体积条件的资源');continue; }
+    if(!item.autoDownload) { activity(item,'matched',ep.key+' 已匹配资源，自动下载已关闭');continue; }
+    const result=await addToEngine(item,found.best);
+    if(!result.ok) {blocked=result.reason;break;}
+    trackSubmission(item,[ep.key],result.taskId);known.add(ep.key);added.push(ep.key);
   }
-
-  item.downloadedKeys = [...downloaded].filter(key => !item.pendingTasks?.[key]);
-  item.totalEpisodes = totalAired;
-  if (!lastMessage) {
-    lastMessage = totalAired === 0
-      ? '暂无已播出的剧集'
-      : `已是最新，共 ${totalAired} 集，已下载 ${downloaded.size} 集`;
-  }
-  item.lastMessage = lastMessage;
-  item.state = 'watching';
-  return { found: candidatesChecked, added };
+  const remaining=aired.filter(ep=>!known.has(ep.key)).length;
+  item.lastMessage=blocked || (added.length ? '已提交 '+added.length+' 集到 qBittorrent' : item.autoDownload ? '本轮未匹配到可下载资源' : '自动下载已关闭，仅搜索不提交')+'；仍有 '+remaining+' 集待补'+(remaining ? '，后续检查继续搜索' : '')+(unavailable.length?'；部分季信息不可用':'');
+  item.state=blocked || unavailable.length?'error':'watching';
+  return {found:checked,added};
 }
 
 /** 执行一次检查，并更新调度字段。 */
@@ -574,11 +571,12 @@ function reconcileDownloads(item) {
     if (task && task.state !== 'error' && Number(task.progress) >= 1) {
       if (!item.downloadedKeys.includes(key)) item.downloadedKeys.push(key);
       delete item.pendingTasks[key];
+      activity(item,'completed',key+' 下载完成');
       changed = true;
     } else if (!task || task.state === 'error') {
       delete item.pendingTasks[key];
       changed = true;
-      item.lastMessage = '上次下载未完成，将重新搜索资源';
+      activity(item,'warning',key+' 下载任务失败或已移除，将重新搜索资源');
     }
   }
   return changed;
@@ -594,19 +592,32 @@ export function runCheck(item) {
 async function performCheck(item) {
   reconcileDownloads(item);
   const started = new Date();
+  item.checkInProgress=true;
+  searchRuns.set(item.id,{cache:new Map(),remaining:12,deadline:Date.now()+90000});
+  activity(item,'checking','开始检查订阅，正在读取影视信息');
   let result = { found: 0, added: [] };
   try {
     result = item.type === 'movie' ? await checkMovie(item) : await checkTv(item);
   } catch (err) {
-    item.lastMessage = `检查失败：${err.message}`;
-    item.state = 'error';
-    log.warn(`[subs] ${item.id} 检查失败: ${err.message}`);
+    item.lastMessage = err.code === 'SEARCH_BUDGET' ? err.message : `检查失败：${err.message}`;
+    item.state = err.code === 'SEARCH_BUDGET' ? 'watching' : 'error';
   }
   item.lastCheckAt = started.toISOString();
   const interval = getSettings().checkIntervalMinutes || 60;
   item.nextCheckAt = new Date(Date.now() + interval * 60000).toISOString();
-  save();
+  item.checkInProgress=false;
+  searchRuns.delete(item.id);
+  if (item.enabled === false) item.state='paused';
+  activity(item,item.state==='error'?'error':item.enabled===false?'paused':'waiting',item.lastMessage+'；'+(item.enabled===false?'订阅已暂停':'下次检查 '+item.nextCheckAt));
   return { ran: true, found: result.found, added: result.added, message: item.lastMessage };
+}
+
+export function queueCheck(id) {
+  const item=findItem(id);if(!item)return null;
+  if(item.enabled===false) return {ran:false,item:decorate(item),message:'订阅已暂停，请先启用'};
+  const alreadyRunning=checks.has(id);
+  runCheck(item).catch(err=>log.warn('[subs] 手动检查失败：'+err.message));
+  return {ran:true,started:true,alreadyRunning,item:decorate(item),message:alreadyRunning?'检查正在进行':'已开始检查，可在订阅记录中查看进度'};
 }
 
 export async function checkNow(id) {
@@ -635,8 +646,7 @@ export async function promoteUpgrade(id) {
   trackSubmission(item, ['movie'], added.taskId);
   const title = item.upgrade.title;
   item.upgrade = null;
-  item.lastMessage = `已加入更好的版本：${title}`;
-  save();
+  activity(item,'submitted',`已加入更好的版本：${title}`);
   return { item: decorate(item) };
 }
 
@@ -645,8 +655,7 @@ export function dismissUpgrade(id) {
   const item = findItem(id);
   if (!item) return null;
   item.upgrade = null;
-  item.lastMessage = '已忽略画质升级提示';
-  save();
+  activity(item,'updated','已忽略画质升级提示');
   return { item: decorate(item) };
 }
 
@@ -728,11 +737,13 @@ export function importPayload(payload) {
       state: 'idle',
       totalEpisodes: 0,
     });
+    activity(items.at(-1),'queued','由导入创建订阅，等待首次检查');
     imported += 1;
   }
 
   store.data.items = items;
   save();
+  log.info('[subs] 导入订阅：新增 '+imported+' 条，跳过 '+skipped+' 条');
   return { imported, skipped };
 }
 

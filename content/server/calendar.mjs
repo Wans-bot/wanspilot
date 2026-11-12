@@ -26,26 +26,25 @@ export function createCalendarService({ getSubscriptions = listSubscriptions, se
     }).finally(() => inflight.delete(key));
     inflight.set(key, request); return request;
   }
-  async function seasonsFor(sub, monthKey) {
+  async function seasonsFor(sub) {
     if (Array.isArray(sub.seasons) && sub.seasons.length) return [...new Set(sub.seasons.map(Number))].filter(n => Number.isInteger(n) && n > 0);
     const data = await cached('detail:' + sub.tmdbId, () => detail({ type: 'tv', id: sub.tmdbId }));
     const all = ((data && data.seasons) || []).filter(item => Number(item.seasonNumber) > 0).sort((a, b) => a.seasonNumber - b.seasonNumber);
-    const started = all.filter(item => !item.airDate || String(item.airDate) <= monthKey + '-31');
-    return (started.length ? started : all).slice(-2).map(item => Number(item.seasonNumber));
+    return [...new Set(all.map(item => Number(item.seasonNumber)))];
   }
   return async function month(monthKey) {
     const today = localDateKey(now());
     const key = String(monthKey || today.slice(0, 7));
     if (!validMonthKey(key)) throw Object.assign(new Error('月份格式应为 YYYY-MM，月份范围为 01–12'), { statusCode: 400 });
-    const subs = (getSubscriptions().items || []).filter(item => item.type !== 'movie' && item.enabled !== false);
-    const warnings = [], results = [];
+    const subs = (getSubscriptions().items || []).filter(item => item.type !== 'movie');
+    const warnings = [], results = [], backlog = [];
     let cursor = 0;
     // Bound concurrent subscriptions; a large watchlist must not flood TMDB.
     await Promise.all(Array.from({ length: Math.min(4, subs.length) }, async () => {
       while (cursor < subs.length) {
         const sub = subs[cursor++];
         let seasons;
-        try { seasons = await seasonsFor(sub, key); } catch (err) {
+        try { seasons = await seasonsFor(sub); } catch (err) {
           warnings.push({ subscriptionId: sub.id, title: sub.title, reason: 'season-info-unavailable' });
           log.warn(`[calendar] ${sub.title || sub.tmdbId} 季信息获取失败：${err.message}`); continue;
         }
@@ -62,13 +61,15 @@ export function createCalendarService({ getSubscriptions = listSubscriptions, se
           const seen = new Set();
           for (const episode of episodes) {
             const airDate = String(episode.airDate || '');
-            if (!airDate.startsWith(key + '-') || !/^\d{4}-\d{2}-\d{2}$/.test(airDate) || !Number.isInteger(episode.episodeNumber) || episode.episodeNumber < 1) continue;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(airDate) || !Number.isInteger(episode.episodeNumber) || episode.episodeNumber < 1) continue;
             const parsedDate = new Date(airDate + 'T00:00:00Z');
             if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== airDate) continue;
             const episodeKey = epKey(seasonNumber, episode.episodeNumber);
             if (seen.has(episodeKey)) continue; seen.add(episodeKey);
-            results.push({ subscriptionId: sub.id, tmdbId: sub.tmdbId, type: 'tv', title: sub.title, posterPath: sub.posterPath || '', season: seasonNumber, episode: episode.episodeNumber, episodeName: episode.name || '', airDate,
-              status: calendarEpisodeStatus(episodeKey, airDate, today, downloaded, pending) });
+            const entry = { subscriptionId: sub.id, tmdbId: sub.tmdbId, type: 'tv', title: sub.title, posterPath: sub.posterPath || '', season: seasonNumber, episode: episode.episodeNumber, episodeName: episode.name || '', airDate,
+              status: calendarEpisodeStatus(episodeKey, airDate, today, downloaded, pending) };
+            if (entry.status === 'missing') backlog.push(entry);
+            if (airDate.startsWith(key + '-')) results.push(entry);
           }
         }
       }
@@ -76,8 +77,11 @@ export function createCalendarService({ getSubscriptions = listSubscriptions, se
     const days = new Map();
     results.sort((a, b) => a.airDate.localeCompare(b.airDate) || String(a.title).localeCompare(String(b.title), 'zh-CN') || a.season - b.season || a.episode - b.episode);
     for (const item of results) { if (!days.has(item.airDate)) days.set(item.airDate, []); days.get(item.airDate).push(item); }
-    return { month: key, today, days: [...days.entries()].map(([date, items]) => ({ date, items })), total: results.length,
-      missing: results.filter(item => item.status === 'missing').length, upcoming: results.filter(item => item.status === 'upcoming').length,
+    const missingDays = new Map();
+    backlog.sort((a,b) => a.airDate.localeCompare(b.airDate) || a.season-b.season || a.episode-b.episode);
+    for (const item of backlog) { if (!missingDays.has(item.airDate)) missingDays.set(item.airDate, []); missingDays.get(item.airDate).push(item); }
+    return { month: key, today, missingScope:'all-subscriptions', missingComplete:warnings.length === 0, missingDays:[...missingDays].map(([date,items])=>({date,items})), days: [...days.entries()].map(([date, items]) => ({ date, items })), total: results.length,
+      missing: backlog.length, missingTotal:backlog.length, monthMissing:results.filter(item => item.status === 'missing').length, upcoming: results.filter(item => item.status === 'upcoming').length,
       downloading: results.filter(item => item.status === 'downloading').length, downloaded: results.filter(item => item.status === 'downloaded').length, warnings };
   };
 }

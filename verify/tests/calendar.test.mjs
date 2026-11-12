@@ -37,9 +37,9 @@ test('calendar never counts future unbroadcast episodes as missing; download sta
   assert.deepEqual(data.days.flatMap(day => day.items.map(item => item.status)), ['downloaded', 'downloading', 'missing', 'upcoming']);
   await assert.rejects(getMonth('2026-13'), error => error.statusCode === 400);
 });
-test('calendar excludes movies, disabled subscriptions, other months and duplicate TMDB episodes', async () => {
+test('calendar excludes movies, deduplicates episodes and retains paused subscriptions', async () => {
   const getMonth = createCalendarService(deps({ getSubscriptions: () => ({ items: [subscription(), subscription({ id: 'movie', type: 'movie' }), subscription({ id: 'off', enabled: false })] }), season: async () => ({ episodes: [episode(1), episode(1), episode(2, '2026-12-01'), episode(0), episode(3, ''), episode(4, '2026-11-99'), episode(5, '2026-11-31')] }) }));
-  assert.equal((await getMonth('2026-11')).total, 1);
+  assert.equal((await getMonth('2026-11')).total, 2);
 });
 test('failed TMDB season loads warn and can recover immediately instead of caching an empty month', async () => {
   let calls = 0;
@@ -52,4 +52,22 @@ test('concurrent month requests share TMDB requests but reflect current download
   const getMonth = createCalendarService(deps({ getSubscriptions: () => ({ items: [subscription({ downloadedKeys: complete ? ['S01E01'] : [], pendingKeys: [] })] }), season: async () => { calls++; await new Promise(r => setTimeout(r, 15)); return { episodes: [episode(1)] }; } }));
   await Promise.all([getMonth('2026-11'), getMonth('2026-11')]); assert.equal(calls, 1);
   complete = true; assert.equal((await getMonth('2026-11')).downloaded, 1); assert.equal(calls, 1);
+});
+
+test('global missing spans all seasons and months, including paused subscriptions, independent of selected month', async () => {
+  const getMonth=createCalendarService(deps({getSubscriptions:()=>({items:[subscription({seasons:null,downloadedKeys:['S01E01'],pendingKeys:['S02E01']}),subscription({id:'paused',tmdbId:202,seasons:[1],enabled:false,downloadedKeys:[],pendingKeys:[]})]}),
+    detail:async()=>({seasons:[1,2,3,4].map(seasonNumber=>({seasonNumber}))}),
+    season:async({id,season})=>({episodes:id===202?[episode(1,'2025-05-01')]:season===1?[episode(1,'2024-01-01'),episode(2,'2024-01-08'),episode(2,'2024-01-08')]:season===2?[episode(1,'2025-02-01'),episode(2,'2025-02-08')]:season===3?[episode(1,'2026-11-01')]:[episode(1,'2026-12-01')]})}));
+  const nov=await getMonth('2026-11'),dec=await getMonth('2026-12');
+  assert.equal(nov.missingTotal,4);assert.equal(nov.monthMissing,1);assert.equal(dec.monthMissing,0);
+  assert.equal(dec.missingTotal,4);assert.equal(dec.total,1);assert.equal(nov.missingComplete,true);
+  assert.equal(nov.missingDays.flatMap(day=>day.items).length,4);
+  assert.ok(nov.missingDays.some(day=>day.date==='2024-01-08'));
+  assert.ok(nov.missingDays.some(day=>day.items.some(item=>item.subscriptionId==='paused')));
+});
+test('partial missing summary is explicitly incomplete and recovers without caching failure', async () => {
+  let fail=true;
+  const getMonth=createCalendarService(deps({getSubscriptions:()=>({items:[subscription({seasons:[1,2],downloadedKeys:[],pendingKeys:[]})]}),season:async({season})=>{if(season===2&&fail)throw new Error('offline');return {episodes:[episode(1,'2025-01-01')]};}}));
+  const partial=await getMonth('2026-11');assert.equal(partial.missingTotal,1);assert.equal(partial.missingComplete,false);
+  fail=false;const full=await getMonth('2026-11');assert.equal(full.missingTotal,2);assert.equal(full.missingComplete,true);
 });

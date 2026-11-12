@@ -330,10 +330,13 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 候选已在下载列表中时记为「已在下载列表中：<片名>」，不算检查失败。
 
 ### `POST /api/subscriptions/:id/check`
-立即执行一次检查，返回
+启动后台检查并立即返回 HTTP 202，不再等待搜索结束：
 ```json
-{ "ran": true, "found": 3, "added": ["S06E05"], "message": "发现 1 个新剧集，已加入下载" }
+{ "ran": true, "started": true, "alreadyRunning": false, "item": {}, "message": "已开始检查，可在订阅记录中查看进度" }
 ```
+检查已在运行时复用现有工作；暂停的订阅返回 `ran:false`。通过 `GET /api/subscriptions` 读取实时阶段与结果。
+
+`SubscriptionItem` 新增 `isChecking`、`activity:{stage,message,at}`、`history`（最近 100 条，随订阅落盘）、`pendingKeys` 和 `downloads:{tasks,downloading,paused,queued,errors}`。关联任务提供真实 qB 状态、进度及任务 ID；已提交不等于已经下载完成。阶段包括 queued、checking、searching、submitting、submitted、matched、waiting、completed、warning、error、paused、interrupted。`totalEpisodes` 是订阅季范围内实际已播集数。未指定季时包含全部正季；单轮最多尝试 5 个单集或提交一个整季包，搜索最多 12 次查询，90 秒后不启动新查询，剩余缺集后续轮换检查。现有网络调用仍遵守其自身超时。
 
 ### `GET /api/subscriptions/export`
 `Content-Type: application/json`，`Content-Disposition: attachment; filename="wanspilot-订阅.json"`。
@@ -356,7 +359,9 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 更新日历：`{ "month": "2026-10", "days": [{ "date": "2026-10-08",
 "items": [{ "subscriptionId": "sub_x1", "tmdbId": 106379, "type": "tv", "title": "流人",
 "posterPath": "/x.jpg", "season": 6, "episode": 4, "airDate": "2026-10-08", "status": "downloaded" }] }],
-"total": 5, "missing": 1 }`。`status` 取 `downloaded`（已完成）、`downloading`（下载中）、`missing`（已到播出日期、待补集）或 `upcoming`（未来未播出）。已完成 / 下载中优先于日期判断。
+"total": 5, "missing": 100, "missingTotal": 100, "monthMissing": 1 }`。`status` 取 `downloaded`（已完成）、`downloading`（下载中）、`missing`（已到播出日期、待补集）或 `upcoming`（未来未播出）。已完成 / 下载中优先于日期判断。
+
+`missing` / `missingTotal` 为所有剧集订阅选定季范围内的累计已播缺集（包含暂停的订阅），与选中的月份无关；未指定季时覆盖全部正季。已下载、已提交下载、未来未播出不计入待补。`monthMissing` 保留当月口径。`missingDays` 返回跨月待补集逐日清单；前端点击待补集后显示完整时间线。`missingComplete:false` 表示部分季信息失败，已知数量仅是下界，界面显示 ≥；`missingScope` 为 `all-subscriptions`。
 
 响应额外包含 `today`（服务端本地日期）、`downloaded`、`downloading`、`upcoming` 计数及 `warnings` 数组；部分 TMDB 失败时返回已获取结果和警告，不冒充完整空日历。非法月份（如 `2026-13`）返回 400。前端按同一订阅、季和日期合并多集展示，接口仍返回逐集记录。
 
@@ -395,9 +400,9 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
 - 日历页只放更新日历：按月历方格排，每天更新哪些直接以海报出现在日期框里，
   海报角标写 `S02E03`，绿框是已下载、红框是漏掉的，今天带「今天」标记；点海报进详情页。
 - 影视墙的横向滑动条：两端渐隐 + 悬停出现的左右按钮，滚动条收细。
-- 页面切换性能：影视墙、搜索、详情、订阅、日历的渲染结果连同事件处理与滚动位置一起留在内存
+- 页面切换性能：影视墙、搜索、详情的渲染结果连同事件处理与滚动位置一起留在内存
   （`viewStash`），回到同一页直接贴回 DOM，不重打接口也不重建节点；订阅或设置变更会作废相关快照。
-  数据缓存 30 分钟，订阅状态 30 秒。
+  数据缓存 30 分钟；订阅列表前台每 3 秒刷新，离开页面或后台标签不轮询。
 - 海报卡右侧含两个按钮：搜索（进 `#/resources/...` 找资源）与订阅（`POST /api/subscriptions`）。
   已订阅时订阅按钮常显且为实心收藏图标，再点一次直接取消订阅（只删订阅记录，已下载的文件与正在下载的任务都不动）。
 - 首次打开若 `GET /api/settings` 的 `tmdbApiKey` 为空，直接把用户带到「设置」页并高亮 Key 输入框。
@@ -408,3 +413,10 @@ Server-Sent Events。每 2 秒推送一次 `data: {"items":[TaskItem],"stats":{�
   前端检测到后打开「导入种子」对话框并预填该地址。
 - 界面语言中文，`<html lang="zh-CN">`。
 - 不引用任何外域资源：字体、图标、脚本全部本地。
+
+
+## 1.3.0 操作记录
+
+业务写入、手动搜索、导入导出、登录退出、连接测试、整理预览与执行记录开始/结果/HTTP 状态。订阅内部额外记录创建、读取季、搜索范围及候选数、未匹配原因、qB 提交、完成、失败与下次检查。轮询、海报和静态文件请求不刷操作日志。禁止记录请求体、账号密码、Cookie、访问令牌、API Key；日志与订阅记录使用脱敏。
+
+`GET /api/logs?lines=1000` 返回最近记录，最大 2000 行。启动时恢复已有日志尾部。`/data/logs/wanspilot.log` 按 4 MiB 轮转并保留 `.1`；属于有界运行记录，不是无限期审计存储。设置页自动刷新、文本筛选和导出最近 2000 行。

@@ -431,7 +431,7 @@ async function cardSubscribe(button) {
     dropStash('subscribe');
     dropStash('calendar');
     paintSubButton(button, item, true);
-    toast('已订阅「' + item.title + '」，季与清晰度可在订阅页调整', 'ok');
+    toast('已订阅「' + item.title + '」，可到订阅页查看搜索与下载进度', 'ok');
   } catch (error) {
     button.disabled = false;
     toast(error.message, 'error');
@@ -740,7 +740,7 @@ function routeSignature(route) {
 }
 
 /** 哪些页面适合留着：数据型页面留着；任务页有实时推送、设置页要现场自检，都现渲染。 */
-const STASHABLE = new Set(['home', 'search', 'detail', 'subscribe']);
+const STASHABLE = new Set(['home', 'search', 'detail']);
 
 function stashDisplayed(host) {
   const node = host.firstElementChild;
@@ -2208,6 +2208,7 @@ async function viewSubscribe(ctx) {
       ]),
     ]),
     el('div', { class: 'sub-tabs', id: 'sub-tabs' }),
+    el('p',{class:'subscription-sync',id:'subscription-sync',role:'status',text:'每 3 秒同步订阅状态'}),
     el('div', { class: 'sub-list', id: 'sub-list' }, skeletonRowsEl(3)),
   ]));
   fileInput.addEventListener('change', async function () {
@@ -2247,7 +2248,7 @@ async function viewSubscribe(ctx) {
     list.addEventListener('keydown', function (event) {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       const card = event.target.closest && event.target.closest('.sub-card');
-      if (!card) return;
+      if (!card || event.target !== card) return;
       event.preventDefault();
       const item = itemOf(card);
       if (item) openSubMenu(item, { currentTarget: card });
@@ -2257,6 +2258,7 @@ async function viewSubscribe(ctx) {
     const item = itemOf(button);
     if (item) openSubMenu(item, { currentTarget: button });
   };
+  currentActions['sub-activity'] = function(button){openSubscriptionActivity(button.dataset.id);};
   currentActions['sub-import'] = function () { fileInput.click(); };
   currentActions['sub-upgrade'] = async function (button) {
     button.disabled = true;
@@ -2284,13 +2286,12 @@ async function viewSubscribe(ctx) {
     button.disabled = true;
     try {
       const result = await api('/subscriptions/' + encodeURIComponent(id) + '/check', { method: 'POST' });
-      toast((result && result.message) || '检查完成', 'ok');
+      toast((result && result.message) || '检查已启动', 'ok');
       dropStash('subscribe');
-      loadSubscriptions(true);
+      await loadSubscriptions(true);
     } catch (error) {
       toast(error.message, 'error');
-      button.disabled = false;
-    }
+    } finally { if(button.isConnected)button.disabled=false; }
   };
   currentActions['sub-toggle'] = async function (button) {
     const id = button.getAttribute('data-id');
@@ -2332,7 +2333,7 @@ let calendarFilter = { status: 'all', series: 'all' };
 const CAL_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const CAL_STATUS = {
   downloaded: { label: '已完成', kind: 'done' }, downloading: { label: '下载中', kind: 'downloading' },
-  missing: { label: '待补集', kind: 'missing' }, upcoming: { label: '未播出', kind: 'upcoming' },
+  missing: { label: '待补集（全部）', kind: 'missing' }, upcoming: { label: '未播出', kind: 'upcoming' },
   partial: { label: '部分完成', kind: 'partial' },
 };
 function thisMonth() { return localDateKey().slice(0, 7); }
@@ -2396,7 +2397,7 @@ function calendarAgendaEl(days, todayKey) {
     return el('section', { class: classNames('cal-agenda__day', today && 'is-today'), 'data-date': day.date }, [
       el('header', { class: 'cal-agenda__head' }, [
         el('div', { class: 'cal-agenda__stamp' }, [el('strong', { text: Number(day.date.slice(-2)) }), el('span', { text: '周' + CAL_WEEKDAYS[weekdayOf(day.date)] })]),
-        el('div', {}, [el('h2', { text: today ? '今天的更新' : (day.date.slice(5).replace('-', '月') + '日') }), el('span', { text: day.items.length + ' 集 · ' + (today ? '今日播出' : future ? '即将播出' : '已到播出日期') })]),
+        el('div', {}, [el('h2', { text: today ? '今天的更新' : ((day.date.slice(0,4)!==todayKey.slice(0,4)?day.date.slice(0,4)+'年':'')+day.date.slice(5).replace('-', '月') + '日') }), el('span', { text: day.items.length + ' 集 · ' + (today ? '今日播出' : future ? '即将播出' : '已到播出日期') })]),
         buttonEl({ class: 'btn btn--sm', 'aria-label': '查看 ' + day.date + ' 更新详情', on: { click: function () { openCalendarDay(day); } } }, null, '详情'),
       ]),
       el('div', { class: 'cal-agenda__events' }, groupCalendarItems(day.items).map(function (group) { return calendarItemEl(group, true); })),
@@ -2408,14 +2409,16 @@ function paintCalendar() {
   if (!body || !calendarData) return;
   const days = calendarData.days || [];
   const stats = calendarStats(days);
-  const filtered = filterCalendarDays(days, calendarFilter);
+  const allMissing=calendarFilter.status === 'missing' && Array.isArray(calendarData.missingDays);
+  const sourceDays=allMissing ? calendarData.missingDays : days;
+  const filtered = filterCalendarDays(sourceDays, calendarFilter);
   const filteredStats = calendarStats(filtered);
   const today = calendarData.today || localDateKey();
   const summary = $('#calendar-summary');
   if (summary) fill(summary, [
     ['本月更新', stats.total, stats.series + ' 部订阅剧集', 'all'],
     ['已完成', stats.downloaded, '下载完成的剧集', 'downloaded'],
-    ['待补集', stats.missing, '已到播出日期', 'missing'],
+    ['待补集', (calendarData.missingComplete === false ? '≥ ' : '')+(calendarData.missingTotal ?? calendarData.missing ?? stats.missing), calendarData.missingComplete === false ? '全部订阅 · 部分信息待恢复' : '全部订阅 · 跨月累计', 'missing'],
     ['即将播出', stats.upcoming, '等待新的故事', 'upcoming'],
   ].map(function (metric) {
     return el('button', { type: 'button', class: 'cal-metric' + (calendarFilter.status === metric[3] ? ' is-active' : ''), 'aria-pressed': String(calendarFilter.status === metric[3]), on: { click: function () {
@@ -2423,14 +2426,14 @@ function paintCalendar() {
     } } }, [el('span', { text: metric[0] }), el('strong', { text: metric[1] }), el('small', { text: metric[2] })]);
   }));
   const count = $('#calendar-count');
-  if (count) count.textContent = filteredStats.series + ' 部剧集 · ' + filteredStats.total + ' 集' + (stats.downloading ? ' · ' + stats.downloading + ' 集下载中' : '');
+  if (count) count.textContent = (allMissing?'全部待补 · ':'本月 · ')+filteredStats.series + ' 部剧集 · ' + filteredStats.total + ' 集' + (stats.downloading ? ' · ' + stats.downloading + ' 集下载中' : '');
   fill(body, [
     calendarData.warnings?.length ? el('div', { class: 'cal-warning', role: 'status', text: '部分剧集播出信息获取失败，当前日历可能不完整。可稍后刷新重试。' }) : null,
-    el('div', { class: 'cal-month-view' + (calendarLayout === 'agenda' ? ' is-hidden' : '') }, [
+    el('div', { class: 'cal-month-view' + (calendarLayout === 'agenda' || allMissing ? ' is-hidden' : '') }, [
       el('div', { class: 'cal__weekdays' }, CAL_WEEKDAYS.map(function (name) { return el('span', { text: '周' + name }); })),
       el('div', { class: 'cal__grid' }, calendarCells(calendarMonth, filtered).map(function (cell) { return calendarCellEl(cell, today); })),
     ]),
-    el('div', { class: 'cal-agenda-view' + (calendarLayout === 'agenda' ? ' is-selected' : '') }, filtered.length ? calendarAgendaEl(filtered, today) : null),
+    el('div', { class: 'cal-agenda-view' + (calendarLayout === 'agenda' || allMissing ? ' is-selected' : '') }, filtered.length ? calendarAgendaEl(filtered, today) : null),
     !filtered.length ? el('div', { class: 'cal-empty' }, [iconNode('calendar'), el('h3', { text: days.length ? '没有符合筛选的更新' : '这个月，暂时没有更新安排' }),
       el('p', { text: days.length ? '试试其他剧集或下载状态。' : '订阅剧集后，已公布的播出日期会出现在这里。' }),
       days.length ? buttonEl({ class: 'btn', on: { click: function () { calendarFilter = { status: 'all', series: 'all' }; renderCalendarFilters(); paintCalendar(); } } }, null, '清除筛选') : el('a', { class: 'btn', href: '#/subscribe' }, '查看订阅'),
@@ -2440,7 +2443,7 @@ function paintCalendar() {
 function renderCalendarFilters() {
   const host = $('#calendar-filters'); if (!host || !calendarData) return;
   const series = new Map();
-  (calendarData.days || []).forEach(function (day) { (day.items || []).forEach(function (item) { series.set(String(item.subscriptionId || item.tmdbId), item.title); }); });
+  [...(calendarData.days || []),...(calendarData.missingDays || [])].forEach(function (day) { (day.items || []).forEach(function (item) { series.set(String(item.subscriptionId || item.tmdbId), item.title); }); });
   if (!series.has(calendarFilter.series)) calendarFilter.series = 'all';
   const seriesSelect = el('select', { id: 'calendar-series', 'aria-label': '筛选订阅剧集', on: { change: function (event) { calendarFilter.series = event.target.value; paintCalendar(); } } }, [
     el('option', { value: 'all', text: '全部剧集' }), [...series.entries()].map(function (entry) { return el('option', { value: entry[0], text: entry[1] }); }),
@@ -2520,9 +2523,31 @@ function moreIconNode() {
   return svg;
 }
 
+function subscriptionStatus(item) {
+  if(item.enabled===false)return {label:'已暂停',kind:'warn'};
+  if(item.isChecking)return {label:item.activity?.stage==='submitting'?'正在提交':item.activity?.stage==='searching'?'正在搜索':'正在检查',kind:'info'};
+  if(item.downloads?.downloading)return {label:'下载中 · '+item.downloads.downloading+' 个任务',kind:'info'};
+  if(item.downloads?.paused)return {label:'下载已暂停',kind:'warn'};
+  if(item.pendingKeys?.length)return {label:'已提交 · '+item.pendingKeys.length+' 集',kind:'info'};
+  return SUB_STATES[item.state] || {label:item.state || '等待检查',kind:'info'};
+}
+function subscriptionActivityBody(item) {
+  return frag([
+    el('div',{class:'subscription-current',role:'status'},[chipEl(subscriptionStatus(item).label,subscriptionStatus(item).kind),el('p',{text:item.lastMessage || '等待首次检查'}),el('p',{class:'field__hint',text:'上次检查：'+(item.lastCheckAt?fmtDateTime(item.lastCheckAt):'尚未完成首次检查')+' · 下次检查：'+(item.enabled===false?'已暂停':item.isChecking?'当前检查结束后安排':item.nextCheckAt?fmtDateTime(item.nextCheckAt):'等待安排')})]),
+    item.downloads?.tasks?.length ? el('section',{class:'subscription-downloads'},[el('h3',{text:'关联下载任务'}),item.downloads.tasks.map(task=>el('div',{class:'subscription-download'},[el('span',{text:task.name || task.id}),chipEl((TASK_STATES[task.state] || {label:task.state}).label,'info'),el('span',{text:Math.round(task.progress*100)+'%'})])),linkEl({class:'btn btn--sm',href:'#/tasks',on:{click:closeModal}},'download','查看下载任务')]) : null,
+    el('h3',{text:'操作与搜索记录'}),
+    el('ol',{class:'subscription-history'},(item.history || []).length ? item.history.slice().reverse().map(event=>el('li',{},[el('time',{datetime:event.at,text:fmtDateTime(event.at)}),el('p',{text:event.message})])) : el('li',{text:'旧版本未保存过程记录，下一次检查开始后会在这里显示。'})),
+  ]);
+}
+function openSubscriptionActivity(id) {
+  closeSubMenu();
+  const item=subscriptionItems.find(item=>item.id===id);if(!item)return;
+  openModal({title:item.title+' · 订阅进度',body:el('div',{class:'subscription-activity-detail','data-subscription-activity':id},subscriptionActivityBody(item))});
+}
+
 /** 订阅卡片展示已有下载记录；播出日期仅使用日历接口的真实数据。 */
 function subCardEl(item) {
-  const state = item.pendingKeys?.length ? { label: '下载中 · ' + item.pendingKeys.length, kind: 'info' } : (SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' });
+  const state = subscriptionStatus(item);
   const type = item.type === 'movie' ? 'movie' : 'tv';
   const completed = new Set(item.downloadedKeys || []).size;
   const aired = Number(item.totalEpisodes) || 0;
@@ -2547,7 +2572,11 @@ function subCardEl(item) {
       el('div', { class:'sub-card__status' }, [chipEl(item.enabled === false ? '已暂停' : state.label, item.enabled === false ? 'warn' : state.kind), el('span', { class:'sub-card__quality', text:item.qualityPreference || '1080p' })]),
       el('p', { class:'sub-card__progress', text:progressText }),
       type !== 'movie' ? el('p', { class:'sub-card__schedule', 'data-schedule':item.id, text:'播出时间待更新' }) : null,
-      item.state === 'error' && item.lastMessage ? el('p', { class:'sub-card__issue', title:item.lastMessage, text:item.lastMessage }) : null,
+      el('p',{class:'sub-card__activity',title:item.lastMessage || '',text:item.lastMessage || '等待首次检查'}),
+      el('div',{class:'sub-card__activity-actions'},[
+        buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-activity','data-id':item.id},'activity','记录'),
+        buttonEl({class:'btn btn--sm btn--ghost','data-action':'sub-check','data-id':item.id,disabled:item.isChecking || item.enabled===false},'search',item.isChecking?'进行中':'检查'),
+      ]),
     ]),
     more,
   ]);
@@ -2556,7 +2585,7 @@ function subCardEl(item) {
 /** 右击（或在触屏上点三个点）弹出的订阅操作菜单：按钮都在这里，平时不占地方。 */
 function openSubMenu(item, event) {
   closeSubMenu();
-  const state = item.pendingKeys?.length ? { label: '下载中 · ' + item.pendingKeys.length, kind: 'info' } : (SUB_STATES[item.state] || { label: item.state || '未知', kind: 'info' });
+  const state = subscriptionStatus(item);
   const type = item.type === 'movie' ? 'movie' : 'tv';
   const seasons = Array.isArray(item.seasons) && item.seasons.length
     ? '第 ' + item.seasons.join('、') + ' 季'
@@ -2584,6 +2613,7 @@ function openSubMenu(item, event) {
     }),
     item.lastMessage ? el('p', { class: 'sub-menu__msg', text: item.lastMessage }) : null,
     el('div', { class: 'sub-menu__items' }, [
+      buttonEl({class:'sub-menu__item','data-action':'sub-activity','data-id':item.id},'activity','查看搜索与下载记录'),
       buttonEl({ class: 'sub-menu__item', 'data-action': 'sub-check', 'data-id': item.id }, 'refresh', '立即检查'),
       buttonEl({ class: 'sub-menu__item', 'data-action': 'sub-edit', 'data-id': item.id }, null, '编辑'),
       buttonEl({
@@ -2709,6 +2739,35 @@ async function loadSubscriptions(force) {
   fill(list, wanted.map(subCardEl));
   if (active === 'tv') updateSubscriptionAirDates(list);
 }
+
+let subscriptionPollBusy=false;
+async function refreshSubscriptionActivity() {
+  if(subscriptionPollBusy || !accessReady || document.hidden || parseRoute().name!=='subscribe' || !$('#sub-list'))return;
+  subscriptionPollBusy=true;
+  const list=$('#sub-list');
+  try {
+    const previous=subscriptionItems;
+    const items=await loadSubscriptionsCached(true);
+    if(!list.isConnected || parseRoute().name!=='subscribe')return;
+    subscriptionItems=items;
+    const oldById=new Map(previous.map(item=>[item.id,item]));
+    if(previous.length!==items.length || previous.some(item=>!items.some(next=>next.id===item.id))) {await loadSubscriptions(true);return;}
+    list.querySelectorAll('.sub-card').forEach(card=>{
+      const item=items.find(item=>item.id===card.dataset.id);if(!item)return;
+      if(JSON.stringify(item)===JSON.stringify(oldById.get(item.id)))return;
+      const replacement=subCardEl(item),meta=card.querySelector('.sub-card__meta'),nextMeta=replacement.querySelector('.sub-card__meta');
+      const focused=meta.contains(document.activeElement)?document.activeElement.dataset.action:null;
+      meta.replaceWith(nextMeta);
+      if(focused)nextMeta.querySelector('[data-action="'+focused+'"]')?.focus({preventScroll:true});
+    });
+    if(items.some(item=>item.type!=='movie'))await updateSubscriptionAirDates(list);
+    const detail=document.querySelector('[data-subscription-activity]');
+    if(detail){const item=items.find(item=>item.id===detail.dataset.subscriptionActivity);if(item){const scroll=detail.parentElement.scrollTop;fill(detail,subscriptionActivityBody(item));detail.parentElement.scrollTop=scroll;}}
+    const sync=$('#subscription-sync');if(sync)sync.textContent='已同步 '+new Date().toLocaleTimeString('zh-CN',{hour12:false})+' · 每 3 秒刷新';
+  }catch(error){const sync=$('#subscription-sync');if(sync)sync.textContent='状态同步失败：'+error.message+'，将自动重试';}
+  finally{subscriptionPollBusy=false;}
+}
+setInterval(refreshSubscriptionActivity,3000);
 
 async function updateSubscriptionAirDates(list) {
   const month=thisMonth();
@@ -3194,6 +3253,24 @@ function organizeSettingsFields(form, settings) {
   tmdb.append(el('div',{class:'connection-actions'},[buttonEl({class:'btn','data-action':'test','data-kind':'tmdb'},'activity','测试连接'),buttonEl({class:'btn btn--ghost','data-action':'test','data-kind':'image'},'image','测试图片'),el('span',{class:'connection-result',role:'status',text:settings.tmdbApiKeySet?'密钥已配置 · 可测试连接':'等待配置密钥'})]));
   const qb=form.querySelector('#qb-test-result'); if(qb){qb.classList.add('connection-result');qb.setAttribute('role','status');qb.textContent=settings.qbUrl?'地址已填写 · 可测试连接':'填写地址后测试连接';}
 }
+let logText='',logBusy=false;
+function paintLogs() {
+  const pre=$('#logs');if(!pre)return;
+  const atBottom=pre.scrollHeight-pre.scrollTop-pre.clientHeight<40;
+  const query=($('#logs-filter')?.value || '').toLowerCase();
+  pre.textContent=logText.split('\n').filter(line=>!query || line.toLowerCase().includes(query)).join('\n') || (query?'没有匹配的记录':'暂无日志');
+  if(atBottom)pre.scrollTop=pre.scrollHeight;
+}
+async function refreshLogs(force) {
+  const pre=$('#logs');
+  if(logBusy || !accessReady || !pre || (!force && (document.hidden || !$('#logs-auto')?.checked || !document.querySelector('.settings-group[data-section="diag"].is-active'))))return;
+  logBusy=true;
+  try {const text=await apiText('/logs?lines=1000');if(!pre.isConnected)return;logText=text;paintLogs();const hint=$('#logs-feedback');if(hint)hint.textContent='已同步 '+new Date().toLocaleTimeString('zh-CN',{hour12:false})+' · 最近 1000 行 · /data/logs 保留文件记录';}
+  catch(error){const hint=$('#logs-feedback');if(hint)hint.textContent='日志同步失败：'+error.message+'，可刷新重试';}
+  finally{logBusy=false;}
+}
+setInterval(()=>refreshLogs(false),3000);
+
 function inlineTestResult(button, text, state) {
   const card=button.closest('.panel'); if(!card)return;
   let note=card.querySelector('.connection-result');
@@ -3279,9 +3356,11 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   const logsBlock = el('div', { class: 'panel' }, [
     el('div', { class: 'panel__head' }, [
       el('h2', { class: 'panel__title', text: '运行日志' }),
-      buttonEl({ class: 'btn btn--sm', 'data-action': 'load-logs' }, 'refresh', '加载日志'),
+      el('div',{class:'row row--wrap'},[el('label',{class:'logs-auto'},[el('input',{type:'checkbox',id:'logs-auto',checked:true}), '自动刷新']),buttonEl({ class: 'btn btn--sm', 'data-action': 'load-logs' }, 'refresh', '刷新'),linkEl({class:'btn btn--sm',href:'/api/logs?lines=2000',download:'wanspilot.log'},'download','导出')]),
     ]),
-    el('pre', { class: 'debug logs', id: 'logs', text: '点「加载日志」查看后端最近 200 行输出。' }),
+    el('p',{class:'field__hint',id:'logs-feedback',role:'status',text:'最近 1000 行，每 3 秒刷新；更早记录保存在 /data/logs。'}),
+    el('input',{type:'search',id:'logs-filter',placeholder:'筛选片名、操作或错误…','aria-label':'筛选日志',on:{input:paintLogs}}),
+    el('pre', { class: 'debug logs', id: 'logs', text: '正在读取日志…' }),
   ]);
 
   fill(ctx.host, pageEl([
@@ -3402,6 +3481,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     try { history.replaceState(null, '', '#/settings?tab=' + target); } catch (error) { /* 忽略 */ }
     const shell = document.querySelector('.settings-shell');
     if (shell) shell.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if(target==='diag')refreshLogs(true);
   };
   currentActions['toggle-key'] = function (button) {
     const input = $('#set-tmdb-key');
@@ -3496,18 +3576,8 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
     }
     finally { if (button && document.contains(button)) button.disabled = false; }
   };
-  currentActions['load-logs'] = async function (button) {
-    const pre = $('#logs');
-    button.disabled = true;
-    try {
-      const text = await apiText('/logs?lines=200');
-      pre.textContent = text || '（日志为空）';
-    } catch (error) {
-      pre.textContent = '读取日志失败：' + error.message;
-    } finally {
-      if (document.contains(button)) button.disabled = false;
-    }
-  };
+  currentActions['load-logs'] = async function(button){button.disabled=true;await refreshLogs(true);if(button.isConnected)button.disabled=false;};
+  if(settingsTab==='diag')refreshLogs(true);
 
   if (highlightKey) {
     const field = $('#tmdb-key-field');
@@ -4170,7 +4240,17 @@ function showLogin() {
       el('code', { text: 'docker exec wanspilot cat /data/access-token' }),
     ]),
   ]);
-  fill($('#view'), el('div', { class: 'access' }, form));
+  const story=el('section',{class:'access__story','aria-label':'私人影视空间'},[
+    el('img',{class:'access__scene',src:'./login-scene.svg',alt:'影视海报与搜索、下载、日历图标',width:'560',height:'380',decoding:'async'}),
+    el('span',{class:'access__eyebrow',text:'YOUR PRIVATE CINEMA'}),
+    el('h2',{text:'让好故事，接着发生。'}),
+    el('p',{class:'access__description',text:'发现值得看的作品，让追更、搜索和下载各就其位。'}),
+    el('div',{class:'access__features'},[['film','发现影视'],['calendar','订阅追更'],['download','下载管理']].map(entry=>el('span',{},[iconNode(entry[0]),entry[1]]))),
+  ]);
+  form.querySelector('.access__fields label:first-child .field__label')?.prepend(iconNode(accountMode?'user':'key'));
+  if(accountMode)form.querySelector('.access__fields label:last-child .field__label')?.prepend(iconNode('lock'));
+  form.append(el('p',{class:'access__private'},[iconNode('lock'),el('span',{text:'你的媒体空间，由你掌控'})]));
+  fill($('#view'), el('div', { class: 'access' }, [story,form]));
   form.addEventListener('submit', async function (event) {
     event.preventDefault(); if (submit.disabled) return;
     submit.disabled = true; submit.textContent = '正在登录…'; note.textContent = '';

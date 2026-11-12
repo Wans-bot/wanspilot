@@ -8,9 +8,10 @@ import { spawn } from 'node:child_process';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wanspilot-api-'));
 const token = 'integration-test-access-token-only';
 let child, base, cookie, upstreamBase;
-const upstream = http.createServer((req, res) => {
+const upstream = http.createServer(async (req, res) => {
   if (req.url.startsWith('/images/')) { res.setHeader('content-type', 'image/png'); res.end(Buffer.from('89504e470d0a1a0a00000000', 'hex')); return; }
   res.setHeader('content-type', 'application/json');
+  if(req.url.startsWith('/3/tv/987654')) {await new Promise(r=>setTimeout(r,250));res.end(JSON.stringify({id:987654,name:'Audit Fixture',seasons:[]}));return;}
   if (req.url.startsWith('/bad/')) { res.statusCode = 401; res.end(JSON.stringify({ status_message: 'invalid draft key' })); return; }
   res.end(JSON.stringify({ images: { secure_base_url: 'https://image.example/' } }));
 });
@@ -85,6 +86,21 @@ test('explicit secret clearing works without affecting unrelated settings', asyn
   const cleared = await (await request('/api/settings', { method: 'PUT', body: { qbPassword: '' } })).json();
   assert.equal(cleared.qbPasswordSet, false); assert.equal(cleared.tmdbApiKeySet, true);
 });
+test('subscription create and async checks expose activity and all mutation audits without secrets', async () => {
+  const created=await request('/api/subscriptions',{method:'POST',body:{type:'tv',tmdbId:987654,title:'Audit Fixture'}});
+  assert.equal(created.status,201);const {item}=await created.json();
+  assert.equal(item.isChecking,true);assert.ok(item.history.some(event=>event.stage==='queued'));
+  const check=await request('/api/subscriptions/'+item.id+'/check',{method:'POST'});
+  assert.equal(check.status,202);assert.equal((await check.json()).alreadyRunning,true);
+  let finished;
+  for(let n=0;n<40;n++){finished=(await (await request('/api/subscriptions')).json()).items.find(sub=>sub.id===item.id);if(!finished.isChecking)break;await new Promise(r=>setTimeout(r,50));}
+  assert.equal(finished.isChecking,false);assert.equal(finished.activity.stage,'error');
+  assert.equal((await request('/api/subscriptions/'+item.id,{method:'DELETE'})).status,200);
+  const text=await (await request('/api/logs?lines=2000')).text();
+  for(const value of ['创建订阅','开始检查订阅','立即检查订阅','取消订阅','保存设置'])assert.ok(text.includes(value),value);
+  for(const secret of ['private-test-key','private-test-password','draft-key',token])assert.ok(!text.includes(secret));
+});
+
 test('logout clears cookie and bearer access is supported for automation', async () => {
   const res = await request('/api/auth/logout', { method: 'POST', body: {} }); assert.match(res.headers.get('set-cookie'), /Max-Age=0/); cookie = null;
   assert.equal((await request('/api/settings')).status, 401);

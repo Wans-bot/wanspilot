@@ -131,6 +131,54 @@ test('concurrent subscription checks share the same work', async () => {
   let calls = 0; initSubs({ detail: async () => { calls++; await new Promise(r => setTimeout(r, 30)); return { title: 'Example', releaseDate: '2020-01-01', year: '2020' }; } });
   const sub = item('movie'); await Promise.all([subs.runCheck(sub), subs.runCheck(sub)]); assert.equal(calls, 1);
 });
+test('subscription searching is visible while first check runs and records completed stages', async () => {
+  let unblock;const gate=new Promise(resolve=>{unblock=resolve;});
+  initSubs({searchResources:async()=>{await gate;return {items:[candidate]};}});
+  const response=subs.createSubscription({type:'tv',tmdbId:995,title:'Example',seasons:[1]});
+  const id=response.item.id;
+  await new Promise(resolve=>setTimeout(resolve,5));
+  let live=subs.listSubscriptions().items.find(item=>item.id===id);
+  assert.equal(live.isChecking,true);assert.equal(live.activity.stage,'searching');assert.match(live.lastMessage,/正在搜索/);
+  unblock();await subs.checkNow(id);
+  live=subs.listSubscriptions().items.find(item=>item.id===id);
+  assert.equal(live.isChecking,false);assert.equal(live.downloads.downloading,1);
+  assert.ok(live.history.some(event=>event.stage==='submitted'));assert.ok(live.history.some(event=>event.stage==='waiting'));
+  assert.deepEqual(live.downloadedKeys,[]);subs.deleteSubscription(id);
+});
+test('unmatched long series stops after five episode searches, reports missing accurately and rotates next batch', async () => {
+  const searched=[];
+  initSubs({season:async()=>({episodes:Array.from({length:600},(_,i)=>({episodeNumber:i+1,airDate:'2020-01-01'}))}),searchResources:async(params)=>{if(params.episode)searched.push(params.episode);return {items:[]};}});
+  const sub=item();await subs.runCheck(sub);
+  assert.equal(sub.totalEpisodes,600);assert.match(sub.lastMessage,/600 集待补/);assert.doesNotMatch(sub.lastMessage,/已是最新/);
+  assert.deepEqual([...new Set(searched)],[1,2,3,4,5]);
+  searched.length=0;await subs.runCheck(sub);assert.deepEqual([...new Set(searched)],[6,7,8,9,10]);
+});
+test('source failure surfaces as subscription error and history rather than silently claiming no updates', async () => {
+  initSubs({searchResources:async()=>({items:[],sources:[{id:'failed-source',ok:false}]})});
+  const sub=item();await subs.runCheck(sub);assert.equal(sub.state,'error');assert.match(sub.lastMessage,/全部索引源不可用/);
+  assert.equal(sub.activity.stage,'error');
+});
+test('unselected seasons cover all regular seasons and total aired is not truncated by search budget', async () => {
+  initSubs({detail:async()=>({title:'Example',seasons:[0,1,2,3,4].map(seasonNumber=>({seasonNumber}))}),season:async()=>({episodes:[1,2,3].map(episodeNumber=>({episodeNumber,airDate:'2020-01-01'}))}),searchResources:async()=>({items:[]})});
+  const sub=item();sub.seasons=null;await subs.runCheck(sub);assert.equal(sub.totalEpisodes,12);assert.match(sub.lastMessage,/12 集待补/);
+});
+test('paused subscription will not submit a candidate resolved after pause', async () => {
+  let release,calls=0;const gate=new Promise(resolve=>{release=resolve;});
+  initSubs({searchResources:async()=>{await gate;return {items:[candidate]};},addTask:async()=>{calls++;return {id:hash};}});
+  const sub=item();const checking=subs.runCheck(sub);await new Promise(r=>setTimeout(r,5));sub.enabled=false;release();await checking;
+  assert.equal(calls,0);assert.equal(sub.state,'paused');
+});
+test('subscription activity history persists across restart and reports interrupted work for rescheduling', async () => {
+  initSubs();const created=subs.createSubscription({type:'movie',tmdbId:998,title:'Example'});await subs.checkNow(created.item.id);
+  subs.shutdownSubscriptions();initSubs();
+  const restored=subs.listSubscriptions().items.find(item=>item.id===created.item.id);
+  assert.ok(restored.history.some(event=>event.stage==='queued'));assert.ok(restored.history.some(event=>event.stage==='submitted'));
+  subs.deleteSubscription(created.item.id);
+  subs.shutdownSubscriptions();
+  fs.writeFileSync(path.join(process.env.WP_DATA_DIR,'subscriptions.json'),JSON.stringify({items:[{...item(),activity:{stage:'submitted',message:'old work'},checkInProgress:true,pendingTasks:{}}]}));
+  initSubs();const interrupted=subs.listSubscriptions().items[0];
+  assert.equal(interrupted.activity.stage,'interrupted');assert.equal(interrupted.isChecking,false);assert.ok(interrupted.nextCheckAt);subs.deleteSubscription(interrupted.id);
+});
 test('organizer preview is read-only and hardlinks preserve original file and inode', async () => {
   initSubs(); settings.updateSettings({ autoOrganize: false, deleteSamples: true, writeNfo: false });
   const dir = process.env.WP_DOWNLOAD_DIR; fs.mkdirSync(path.join(dir, 'original'), { recursive: true });
