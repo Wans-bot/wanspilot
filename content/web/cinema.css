@@ -164,7 +164,7 @@ html[data-theme='light'] .hero__bg::after { background: linear-gradient(0deg,var
 .task-list { gap: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
 .task { display: grid; grid-template-columns: minmax(0,1fr) 300px 160px; gap: 12px 24px; align-items: center; padding: 20px 22px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
 .task:last-child { border-bottom: 0; }
-.task__head { grid-column: 1; grid-row: 1; align-items: center; }
+.task__head { grid-column: 1; grid-row: 1; display: grid; grid-template-columns: 18px minmax(0,1fr) auto; align-items: center; justify-content: start; }
 .task__name { font-size: 13px; font-weight: 500; line-height: 1.6; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
 .task__head .chip { flex-shrink: 0; }
 .task__progress { grid-column: 1; grid-row: 2; display: flex; align-items: center; gap: 12px; }
@@ -462,7 +462,7 @@ html[data-theme='light'] .cal-nav__date input[type='month'] { color-scheme: ligh
 }
 
 /* Neutral automation controls and accessible selection. */
-.management-tools{display:grid;gap:14px;padding:18px;margin-block:18px;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.management-tools{display:grid;gap:14px;padding:18px;margin-block:0;background:var(--surface);border:1px solid var(--line);border-radius:12px}
 .management-filters,.management-batch{display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-width:0}.management-filters{margin-block:12px}.management-tools .management-filters{margin:0}.management-filters input,.management-filters select{min-width:0;max-width:100%;min-height:40px}.management-filters input[type=search]{flex:1 1 220px}.management-batch .field__hint,.management-tools>.field__hint{margin:0}
 .sub-card__select{position:absolute;top:8px;left:8px;display:grid;place-items:center;width:36px;height:36px;background:var(--surface);border:1px solid var(--line);border-radius:8px;cursor:pointer}.sub-card__select input,.task-select,.episode-row input{width:18px;height:18px;margin:0;flex-shrink:0;cursor:pointer}.sub-card__activity-actions{flex-wrap:wrap;gap:3px}.sub-card__activity-actions .btn{padding-inline:6px}.task__head{gap:10px}.task__name{min-width:0}.subscription-rules{margin-block:16px}.subscription-rules summary{cursor:pointer;padding-block:10px}.subscription-rules .field{min-width:0}
 .episode-manager{display:grid;gap:14px}.episode-list{display:grid;border:1px solid var(--line);border-radius:10px;overflow:hidden}.episode-row{display:flex;align-items:center;gap:12px;min-height:60px;padding:12px 14px;cursor:pointer}.episode-row+.episode-row{border-top:1px solid var(--line)}.episode-row>div{flex:1;min-width:0}.episode-row strong{display:block;overflow-wrap:anywhere;font-size:13px;line-height:1.6}.episode-row small{display:block;color:var(--text-3);font-size:11px;line-height:1.7}.episode-row:focus-within{outline:2px solid var(--accent);outline-offset:-2px}

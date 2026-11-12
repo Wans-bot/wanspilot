@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { assertRenderedIcons, settleVisualState, verifyTaskPolish } from './browser-ui-polish.mjs';
 const require = createRequire(new URL('../content/package.json', import.meta.url));
 const puppeteer = require('puppeteer-core');
 const repo = fileURLToPath(new URL('..', import.meta.url));
@@ -125,6 +126,7 @@ async function checkLayout(page, name) {
   await pause(180);
   const data = await page.evaluate(() => ({ width: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth, heading: document.querySelector('#view h1')?.textContent || '', mainChildren: document.querySelector('#view')?.childElementCount }));
   assert.equal(data.overflow, false, name + ' horizontal overflow'); assert.ok(data.mainChildren, name + ' empty view');
+  await assertRenderedIcons(page, name);
   record(name, data);
 }
 try {
@@ -235,6 +237,7 @@ try {
   await page.waitForFunction(()=>document.querySelector('.task')?.textContent.includes('任务已继续'));
   assert.equal(await page.$eval('.task [role="progressbar"]',n=>Number(n.getAttribute('aria-valuenow'))),40);
   record('download pause resume and accessible progress');
+  await verifyTaskPolish(page, { out, record });
   await page.evaluate(()=>{location.hash='#/subscribe?type=tv';}); await page.waitForSelector('.sub-card__schedule');
   await page.waitForFunction(()=>[...document.querySelectorAll('.sub-card__schedule')].some(n=>n.textContent.includes('S01 E02')));
   assert.ok((await page.$eval('[data-id="calendar-sub-2"] .sub-card__progress',n=>n.textContent)).includes('已下载 1 / 已播 3 集'));
@@ -273,6 +276,8 @@ try {
   assert.equal(await page.$eval('#source-form [name=url]',n=>n.value),'');assert.equal(await page.$eval('#source-form [name=apiKey]',n=>n.value),'');
   const sourceSwitch=await page.$eval('#source-form [name=enabled]',n=>({width:parseFloat(getComputedStyle(n).width),height:parseFloat(getComputedStyle(n).height),checked:n.checked}));assert.deepEqual(sourceSwitch,{width:36,height:22,checked:true});
   await page.focus('#source-form [name=enabled]');await page.keyboard.press('Space');assert.equal(await page.$eval('#source-form [name=enabled]',n=>n.checked),false);await page.keyboard.press('Space');
+  await settleVisualState(page);
+  assert.equal(await page.$eval('.modal', node => getComputedStyle(node).opacity), '1');
   await page.screenshot({path:path.join(out,'source-editor-desktop.png')});
   await page.click('#source-form [type=submit]');await page.waitForSelector('#source-form',{hidden:true});assert.equal(sourceMutations.at(-1).body.url,'');assert.equal(sourceMutations.at(-1).body.apiKey,'');record('source edit hides credentials, preserves blank fields and supports keyboard switches');
   await page.evaluate(()=>[...document.querySelectorAll('.source-card button')].find(b=>b.textContent.includes('测试')).click());await page.waitForFunction(()=>document.querySelector('.source-card').textContent.includes('连接正常'));assert.ok((await page.$eval('.source-card',n=>n.textContent)).includes('2026-11-12 20:00'));record('source connection result uses Shanghai time');

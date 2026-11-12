@@ -862,7 +862,7 @@ function featuredEl(items) {
   return el('section', { class: 'feature', 'aria-label': '精选推荐' }, [
     image, el('div', { class: 'feature__veil' }),
     el('div', { class: 'feature__content' }, [
-      el('div', { class: 'feature__eyebrow', text: 'WANSPILOT 精选' }),
+      el('div', { class: 'feature__eyebrow', text: 'WansPilot 精选' }),
       el('div', { class: 'feature__meta' }, [
         el('span', { text: typeLabel(item.type) }), el('span', { text: item.year || '' }),
         item.voteAverage > 0 ? el('span', { class: 'feature__rating' }, [iconNode('star'), item.voteAverage.toFixed(1)]) : null,
@@ -1144,7 +1144,7 @@ async function viewSearch(ctx) {
           class: 'page__sub',
           text: searching
             ? '搜索「' + query + '」的相关作品'
-            : '发现电影、剧集和动漫。',
+            : '发现电影、剧集和动漫',
         }),
       ]),
       form,
@@ -1761,12 +1761,11 @@ async function viewResources(ctx) {
   const list = el('div', { class: 'res-list', id: 'resource-list' }, skeletonRowsEl(4));
 
   fill(ctx.host, pageEl([
-    el('header', { class: 'page__head' }, el('div', {}, [
+    el('header', { class: 'page__head' }, [el('div', {}, [
       el('div', { class: 'crumb' }, linkEl({ href: '#/detail/' + type + '/' + id }, 'back', '返回详情')),
       el('h1', { text: '找资源' }),
       el('p', { class: 'page__sub', text: heading }),
-      linkEl({class:'btn btn--sm',href:'#/sources'},'settings','管理资源渠道'),
-    ])),
+    ]), linkEl({ class: 'btn', href: '#/sources' }, 'settings', '管理资源渠道')]),
     form,
     mobileFilterPanel(filterHost, '资源筛选'),
     sourceHost,
@@ -2013,7 +2012,7 @@ function taskRowEl(task) {
     ]),
     el('div', { class: 'task__progress' }, [el('div', { class: classNames('bar', barKind), role:'progressbar', 'aria-label':'下载进度', 'aria-valuemin':'0', 'aria-valuemax':'100', 'aria-valuenow':percent }, el('i', { 'data-progress': true, style: 'width:' + percent + '%' })), el('span', { class:'task__percent', 'data-percent':true, text:percent+'%' })]),
     el('div', { class: 'task__meta' }, [
-      el('span', { 'data-size': true, text: fmtBytes(done) + ' / ' + fmtBytes(total) + '（' + percent + '%）' }),
+      el('span', { 'data-size': true, text: fmtBytes(done) + ' / ' + fmtBytes(total) }),
       el('span', { 'data-rate': true, text: '↓ ' + fmtRate(task.rateDown) }),
       el('span', { 'data-peers': true, text: String(task.peers || 0) + ' 个节点' }),
       el('span', { 'data-eta': true, text: '剩余 ' + fmtSeconds(task.etaSeconds) }),
@@ -2080,8 +2079,7 @@ function paintTasks() {
       const percentLabel = node.querySelector('[data-percent]'); if (percentLabel) percentLabel.textContent = (progress * 100).toFixed(1) + '%';
       const size = node.querySelector('[data-size]');
       if (size) {
-        size.textContent = fmtBytes(task.downloadedBytes) + ' / ' + fmtBytes(task.sizeBytes)
-          + '（' + (progress * 100).toFixed(1) + '%）';
+        size.textContent = fmtBytes(task.downloadedBytes) + ' / ' + fmtBytes(task.sizeBytes);
       }
       const rate = node.querySelector('[data-rate]');
       if (rate) rate.textContent = '↓ ' + fmtRate(task.rateDown);
@@ -2109,7 +2107,7 @@ async function viewTasks(ctx) {
     el('header', { class: 'page__head' }, [
       el('div', {}, [
         el('h1', { text: '下载任务' }),
-        el('p', { class: 'page__sub', text: '查看传输进度，管理下载与做种。' }),
+        el('p', { class: 'page__sub', text: '查看传输进度，管理下载与做种' }),
       ]),
       el('div', { class: 'page__actions' }, [
         buttonEl({ class: 'btn btn--primary', 'data-action': 'import' }, 'plus', '导入任务'),
@@ -2245,7 +2243,7 @@ async function viewSubscribe(ctx) {
         el('h1', { text: '订阅' }),
         el('p', {
           class: 'page__sub',
-          text: '关注的作品、下载进度与下一次更新。',
+          text: '关注的作品、下载进度与下一次更新',
         }),
       ]),
       el('div', { class: 'page__actions' }, [
@@ -2547,7 +2545,7 @@ async function loadCalendar(force) {
 async function viewCalendar(ctx) {
   calendarMonth = calendarMonth || thisMonth();
   fill(ctx.host, pageEl([
-    el('header', { class: 'page__head cal-page-head' }, [el('div', {}, [el('span', { class: 'eyebrow', text: 'YOUR WATCHLIST, DAY BY DAY' }), el('h1', { text: '追剧日历' }), el('p', { class: 'page__sub', text: '订阅播出安排与下载进度 · 上海时间（UTC+8）' })]),
+    el('header', { class: 'page__head cal-page-head' }, [el('div', {}, [el('h1', { text: '追剧日历' }), el('p', { class: 'page__sub', text: '订阅播出安排与下载进度 · 上海时间（UTC+8）' })]),
       el('a', { class: 'btn', href: '#/subscribe', 'aria-label': '管理订阅' }, [iconNode('bookmark'), el('span', { text: '管理订阅' })]),
     ]),
     el('div', { class: 'cal-summary', id: 'calendar-summary' }),
@@ -3508,7 +3506,7 @@ async function viewSources(ctx) {
     el('p',{class:'field__hint',text:item.lastTest?(item.lastTest.ok?'连接正常':'连接异常')+' · '+shanghaiDateTime(item.lastTest.at)+' · '+item.lastTest.message:'尚未测试连接'}),
     el('div',{class:'source-card__actions'},[
       buttonEl({class:'btn btn--sm',on:{click:e=>action(item,'test',e.currentTarget)}},'activity','测试'),
-      buttonEl({class:'btn btn--sm',on:{click:()=>editSource(item)}},'edit','编辑'),
+      buttonEl({class:'btn btn--sm',on:{click:()=>editSource(item)}},null,'编辑'),
       buttonEl({class:'btn btn--sm',on:{click:e=>action(item,'toggle',e.currentTarget)}},null,item.enabled?'停用':'启用'),
       buttonEl({class:'btn btn--sm btn--ghost',on:{click:e=>action(item,'delete',e.currentTarget)}},'trash','移除')
     ])
@@ -3640,7 +3638,7 @@ function paintSettings(ctx, settings, status, system, focusKey, pending) {
   fill(ctx.host, pageEl([
     el('header', { class: 'page__head' }, el('div', {}, [
       el('h1', { text: '设置' }),
-      el('p', { class: 'page__sub', text: 'qBittorrent、TMDB、筛选条件与自检。' }),
+      el('p', { class: 'page__sub', text: '管理 TMDB、下载连接、订阅规则与自检' }),
     ])),
     callout,
     el('div', { class: 'settings-shell' }, [
@@ -4518,8 +4516,8 @@ function showLogin() {
   ]);
   const story=el('section',{class:'access__story','aria-label':'私人影视空间'},[
     el('img',{class:'access__scene',src:'./login-scene.svg',alt:'影视海报与搜索、下载、日历图标',width:'560',height:'380',decoding:'async'}),
-    el('span',{class:'access__eyebrow',text:'YOUR PRIVATE CINEMA'}),
-    el('h2',{text:'让好故事，接着发生。'}),
+    el('span',{class:'access__eyebrow',text:'你的私人影院'}),
+    el('h2',{text:'让好故事，接着发生'}),
     el('p',{class:'access__description',text:'发现值得看的作品，让追更、搜索和下载各就其位。'}),
     el('div',{class:'access__features'},[['film','发现影视'],['calendar','订阅追更'],['download','下载管理']].map(entry=>el('span',{},[iconNode(entry[0]),entry[1]]))),
   ]);

@@ -141,13 +141,13 @@
   .task-list { gap: 12px; border: 0; border-radius: 0; background: transparent; overflow: visible; }
   .task { border: 1px solid var(--line); background: var(--surface); }
   .task:last-child { border-bottom: 1px solid var(--line); }
-  .task__name { white-space: normal; overflow-wrap: anywhere; }
+  .task__name { display: -webkit-box; -webkit-box-orient: vertical; line-clamp: 2; -webkit-line-clamp: 2; white-space: normal; text-align: left; overflow-wrap: anywhere; }
   .task__meta { display: flex; flex-wrap: wrap; }
   .task__meta [data-peers] { display: inline-flex; }
   .task__foot { flex-direction: column; align-items: stretch; }
   .task__details { order: 2; }
   .task__head { flex-direction: row; align-items: flex-start; gap: 8px; }
-  .task__head > :first-child { min-width: 0; flex: 1; }
+  .task__head > :first-child { min-width: 0; flex: none; align-self: start; margin-top: 4px; }
   .task__head > .chip { flex: 0 0 auto; font-size: 10px; min-height: 26px; padding: 4px 7px; }
   .task__name, .res__title { font-size: 12px; overflow-wrap: anywhere; }
   .task__meta, .res__meta { font-size: 11px; gap: 8px 12px; }
