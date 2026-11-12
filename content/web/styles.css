@@ -571,14 +571,6 @@ select { appearance: none; background-image: none; }
 .block { display: flex; flex-direction: column; gap: 14px; }
 .block__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .block__title { display: flex; align-items: baseline; gap: 10px; }
-.block__title::before {
-  content: "";
-  width: 3px;
-  height: 15px;
-  border-radius: 2px;
-  background: var(--accent);
-  transform: translateY(1px);
-}
 .block__more { color: var(--text-3); font-size: 0.82rem; }
 .block__more:hover { color: var(--accent); }
 
@@ -1295,7 +1287,6 @@ html[data-theme='light'] {
 .modal__backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 /* 区块标题：去掉左侧竖条，改成一条细下划线分栏 */
-.block__title::before { content: none; }
 .block__head { align-items: baseline; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 .block__title { font-size: 1rem; letter-spacing: 0.02em; }
 
@@ -1353,16 +1344,16 @@ textarea { border-radius: var(--radius-sm); }
 }
 .toast__icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--text-2); }
 .toast__text { flex: 1; min-width: 0; }
-/* 提示条底色一律不透明，只靠整圈边框与图标区分成功/失败，半透明底色在页面上看不清 */
+/* 提示条底色一律不透明，通过状态图标区分成功/失败，边框保持中性，半透明底色在页面上看不清 */
 .toast--ok {
   background: var(--toast-bg);
-  border-color: var(--ok);
+  border-color: var(--line-strong);
   box-shadow: var(--shadow-2);
 }
 .toast--ok .toast__icon { color: var(--ok); }
 .toast--error {
   background: var(--toast-bg);
-  border-color: var(--err);
+  border-color: var(--line-strong);
   box-shadow: var(--shadow-2);
 }
 .toast--error .toast__icon { color: var(--err); }
@@ -1468,8 +1459,8 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
   border-radius: var(--radius);
   background: var(--surface);
 }
-.panel--ok { border-color: var(--ok); background: var(--ok-soft); }
-.panel--warn { border-color: var(--warn); background: var(--warn-soft); }
+.panel--ok { border-color: var(--line); background: var(--ok-soft); }
+.panel--warn { border-color: var(--line); background: var(--warn-soft); }
 .panel__title { margin: 0 0 10px; font-size: 0.92rem; letter-spacing: 0.03em; }
 .panel .kv__row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
 .panel .kv__key { color: var(--text-3); font-size: 0.8rem; }
@@ -1520,7 +1511,7 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
 }
 .cal__cell--blank { border: 0; background: none; }
 .cal__cell--empty { border-style: dashed; background: none; }
-.cal__cell.is-today { border-color: var(--accent); background: var(--accent-soft); }
+.cal__cell.is-today { border-color: var(--line-strong); background: var(--accent-soft); }
 
 .cal__date {
   display: flex;
@@ -1592,10 +1583,8 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
 }
-.cal__item.is-done { box-shadow: inset 0 0 0 2px var(--ok), var(--shadow-1); }
-.cal__item.is-missing { box-shadow: inset 0 0 0 2px var(--err), var(--shadow-1); }
-.cal__item.is-done .cal__ep { background: linear-gradient(180deg, transparent, rgba(98, 192, 125, 0.92)); color: #06170c; }
-.cal__item.is-missing .cal__ep { background: linear-gradient(180deg, transparent, rgba(226, 112, 95, 0.94)); color: #1a0a07; }
+.cal__item.is-done { box-shadow: var(--shadow-1); }
+.cal__item.is-missing { box-shadow: var(--shadow-1); }
 .cal__cell:not(.is-open) .cal__items .cal__item:nth-child(n + 4) { display: none; }
 .cal__more {
   align-self: flex-start;
@@ -1773,7 +1762,7 @@ html[data-theme='light'] .themebtn__side[data-side='light'] { color: var(--text)
 .settings-nav__item.is-active {
   color: var(--accent);
   background: var(--accent-soft);
-  border-color: var(--accent);
+  border-color: var(--line-strong);
 }
 .settings-nav__item.is-active svg { opacity: 1; }
 .settings-nav__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

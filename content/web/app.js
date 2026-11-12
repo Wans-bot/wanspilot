@@ -848,7 +848,7 @@ function featuredEl(items) {
   return el('section', { class: 'feature', 'aria-label': '精选推荐' }, [
     image, el('div', { class: 'feature__veil' }),
     el('div', { class: 'feature__content' }, [
-      el('div', { class: 'feature__eyebrow' }, [el('span', { class: 'feature__line' }), 'WANSPILOT 精选']),
+      el('div', { class: 'feature__eyebrow', text: 'WANSPILOT 精选' }),
       el('div', { class: 'feature__meta' }, [
         el('span', { text: typeLabel(item.type) }), el('span', { text: item.year || '' }),
         item.voteAverage > 0 ? el('span', { class: 'feature__rating' }, [iconNode('star'), item.voteAverage.toFixed(1)]) : null,
